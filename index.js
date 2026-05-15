@@ -148,7 +148,10 @@ const commands = [
   new SlashCommandBuilder().setName("forceopen").setDescription("🔓 Force-open a channel, resetting all send permissions to default (admin only)")
     .addChannelOption((o) => o.setName("channel").setDescription("Channel to force-open (defaults to current)"))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName("setup-server").setDescription("⚙️ Set up missing channels and categories (skips existing)")
+  new SlashCommandBuilder().setName("setup-server").setDescription("⚙️ Set up channels & categories — creates missing ones, renames & updates topics on existing")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("rules-agree").setDescription("📋 Post the rules agreement panel — members click I Agree to unlock the server")
+    .addChannelOption((o) => o.setName("channel").setDescription("Channel to post in (defaults to current channel)").addChannelTypes(ChannelType.GuildText))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder().setName("cleanup-dupes").setDescription("🗑️ Delete duplicate channels created by a previous setup-server run")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -1047,10 +1050,10 @@ const CHANNEL_MESSAGES = {
 // ── Setup server ───────────────────────────────────────────────────────────────
 
 async function setupServer(guild, interaction) {
-  await interaction.editReply({ content: "🔧 Checking server structure (skipping anything that already exists)..." });
+  await interaction.editReply({ content: "🔧 Setting up server structure — renaming & updating existing channels, creating missing ones..." });
 
   let staffRole = guild.roles.cache.find((r) => r.permissions.has(PermissionFlagsBits.ManageGuild) && !r.managed && r.id !== guild.id);
-  let created = 0, skipped = 0;
+  let created = 0, updated = 0, skipped = 0;
 
   for (const cat of SERVER_STRUCTURE) {
     let category = guild.channels.cache.find(
@@ -1059,6 +1062,8 @@ async function setupServer(guild, interaction) {
     if (!category) {
       try { category = await guild.channels.create({ name: cat.name, type: ChannelType.GuildCategory }); created++; }
       catch (err) { console.error("Failed to create category", cat.name, err.message); continue; }
+    } else if (category.name !== cat.name) {
+      try { await category.setName(cat.name); updated++; } catch (err) { console.error("Failed to rename category", cat.name, err.message); }
     }
 
     for (const ch of cat.channels) {
@@ -1066,7 +1071,18 @@ async function setupServer(guild, interaction) {
       const existing = guild.channels.cache.find(
         (c) => c.type === chType && baseName(c.name) === baseName(ch.name)
       );
-      if (existing) { skipped++; continue; }
+      if (existing) {
+        // Update topic if it has changed
+        if (!ch.voice && ch.topic && existing.topic !== ch.topic) {
+          try { await existing.setTopic(ch.topic); updated++; } catch { /* ignore */ }
+        }
+        // Move to correct category if misplaced
+        if (existing.parentId !== category.id) {
+          try { await existing.setParent(category.id, { lockPermissions: false }); } catch { /* ignore */ }
+        }
+        skipped++;
+        continue;
+      }
 
       const overwrites = [];
       if (ch.staffOnly) {
@@ -1093,7 +1109,6 @@ async function setupServer(guild, interaction) {
           if (msgBuilder) {
             try {
               const built = msgBuilder(guild);
-              // Support both plain embed and { embed, components }
               const payload = built && built.embed
                 ? { embeds: [built.embed], components: [built.components] }
                 : { embeds: [built] };
@@ -1107,7 +1122,7 @@ async function setupServer(guild, interaction) {
   }
 
   await interaction.editReply({
-    content: `✅ Server setup complete!\n• **${created}** channels/categories created\n• **${skipped}** already existed and were skipped`,
+    content: `✅ Server setup complete!\n• **${created}** channels/categories created\n• **${updated}** renamed or had topics updated\n• **${skipped}** already up to date`,
   });
 }
 
@@ -1958,6 +1973,29 @@ client.on("interactionCreate", async (interaction) => {
       content: "🚫 This command is restricted to **Head Admins** only.",
       flags: MessageFlags.Ephemeral,
     });
+  }
+
+  // ── Button: agree_rules ──────────────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === "agree_rules") {
+    const guild  = interaction.guild;
+    const member = interaction.member;
+    let memberRole = guild.roles.cache.find((r) => r.name.toLowerCase() === "member");
+    if (!memberRole) {
+      try {
+        memberRole = await guild.roles.create({ name: "Member", color: 0x5865F2, reason: "Created by rules-agree button" });
+      } catch {
+        return interaction.reply({ content: "❌ Couldn't find or create a **Member** role. Ask an admin to create a role named `Member`.", flags: MessageFlags.Ephemeral });
+      }
+    }
+    if (member.roles.cache.has(memberRole.id)) {
+      return interaction.reply({ content: "✅ You already have the **Member** role!", flags: MessageFlags.Ephemeral });
+    }
+    try {
+      await member.roles.add(memberRole);
+      return interaction.reply({ content: "✅ Welcome! You've been given the **Member** role and now have full access to the server. Enjoy! 🎉", flags: MessageFlags.Ephemeral });
+    } catch {
+      return interaction.reply({ content: "❌ Failed to assign the **Member** role. Make sure the bot's role is above **Member** in Server Settings → Roles.", flags: MessageFlags.Ephemeral });
+    }
   }
 
   // ── Button: open_ticket ──────────────────────────────────────────────────────
@@ -2946,6 +2984,40 @@ client.on("interactionCreate", async (interaction) => {
     // After setup, send the ticket panel if not already posted
     const ticketCh = findChannel(interaction.guild, "create-ticket");
     if (ticketCh) await sendTicketPanel(ticketCh);
+    return;
+  }
+
+  // ── /rules-agree ──────────────────────────────────────────────────────────────
+  if (commandName === "rules-agree") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const targetChannel = interaction.options.getChannel("channel") ?? interaction.channel;
+
+    const embed = new EmbedBuilder()
+      .setTitle("📋 Server Rules")
+      .setDescription(
+        "Please read the rules carefully before joining the community.\n\n" +
+        "**1.** 🤝 Be respectful — no harassment, hate speech, or personal attacks\n" +
+        "**2.** 🚫 No spam, NSFW content, or offensive material\n" +
+        "**3.** 📌 Keep topics in the correct channels\n" +
+        "**4.** 📢 No advertising or unsolicited self-promotion\n" +
+        "**5.** 🎮 Keep game discussions friendly and spoiler-free\n" +
+        "**6.** ⚖️ Follow Discord's [Terms of Service](https://discord.com/terms) at all times\n\n" +
+        "Breaking the rules may result in a **mute, kick, or ban**.\n\n" +
+        "Click **I Agree** below to confirm you have read the rules and to unlock the server! 🔓"
+      )
+      .setColor(0x5865F2)
+      .setFooter({ text: "Cases 2.0 • Click I Agree to get the Member role" })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("agree_rules")
+        .setLabel("✅ I Agree to the Rules")
+        .setStyle(ButtonStyle.Success)
+    );
+
+    await targetChannel.send({ embeds: [embed], components: [row] });
+    await interaction.editReply({ content: `✅ Rules agreement panel posted in ${targetChannel}!` });
     return;
   }
 
