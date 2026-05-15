@@ -756,56 +756,56 @@ async function activateRandomDropZone() {
 
 const SERVER_STRUCTURE = [
   {
-    name: "📂 INFORMATION",
+    name: "📋 INFORMATION",
     channels: [
-      { name: "welcome",  topic: "Welcome to the server!", readOnly: true },
-      { name: "goodbye",  topic: "See who has left the server. 👋", readOnly: true },
+      { name: "welcome",  topic: "👋 Welcome to the server! Read the rules & verify to unlock everything.", readOnly: true },
+      { name: "goodbye",  topic: "👋 See who has left the server. We hope to see you again soon! 💙", readOnly: true },
     ],
   },
   {
-    name: "📂 COMMUNITY",
+    name: "💬 COMMUNITY",
     channels: [
-      { name: "chat",      topic: "General chat — keep it friendly!" },
-      { name: "media",     topic: "Share images, videos, and creative content." },
-      { name: "questions", topic: "Ask questions — staff and members will help." },
-      { name: "memes",     topic: "Post your best memes. Keep it clean." },
+      { name: "chat",      topic: "💬 General chat — keep it friendly, respectful & fun! 🎉" },
+      { name: "media",     topic: "🖼️ Share images, videos, screenshots & creative content. No NSFW." },
+      { name: "questions", topic: "❓ Ask anything — staff and members are here to help you out!" },
+      { name: "memes",     topic: "😂 Post your best memes. Keep it clean & community-friendly." },
     ],
   },
   {
-    name: "📂 GAMING",
+    name: "🎮 GAMING",
     channels: [
-      { name: "clan-recruitment", topic: "Recruit or join clans here." },
-      { name: "game-chat",        topic: "Talk about CASES Beta and Roblox here." },
-      { name: "clips",            topic: "Share your best gameplay clips." },
+      { name: "clan-recruitment", topic: "⚔️ Recruit or join clans here. Post your clan info using the pinned format!" },
+      { name: "game-chat",        topic: "🎮 Talk about CASES Beta, Roblox & gaming in general. No spoilers!" },
+      { name: "clips",            topic: "🎬 Share your best gameplay clips, highlights & wins. Go crazy!" },
     ],
   },
   {
-    name: "📂 PROGRESSION",
+    name: "📈 PROGRESSION",
     channels: [
-      { name: "bot-commands",   topic: "Run all bot commands here." },
-      { name: "leaderboards",   topic: "Server leaderboard.", readOnly: true },
-      { name: "rewards",        topic: "See what rewards you can earn.", readOnly: true },
-      { name: "commands-guide", topic: "Full guide to all bot commands.", readOnly: true },
-      { name: "shop",           topic: "Browse and buy items with /shop.", readOnly: true },
+      { name: "bot-commands",   topic: "🤖 Use all bot commands here — /balance /daily /rank /shop /achievements" },
+      { name: "leaderboards",   topic: "🏆 Top server members ranked by XP & level. Climb the board!", readOnly: true },
+      { name: "rewards",        topic: "💰 See what rewards you can earn by levelling up & staying active!", readOnly: true },
+      { name: "commands-guide", topic: "📋 Full guide to every bot command. Read before asking!", readOnly: true },
+      { name: "shop",           topic: "🛒 Browse & buy items with /shop. Daily deals rotate every 24h!", readOnly: true },
     ],
   },
   {
-    name: "📂 EVENTS",
+    name: "🎊 EVENTS",
     channels: [
-      { name: "announcements", topic: "Official server announcements.", readOnly: true },
-      { name: "giveaways",     topic: "Ongoing giveaways — react 🎉 to enter!", readOnly: true },
-      { name: "events",        topic: "Upcoming and active server events.", readOnly: true },
+      { name: "announcements", topic: "📢 Official server announcements & CASES Beta updates. Stay tuned!", readOnly: true },
+      { name: "giveaways",     topic: "🎉 Ongoing giveaways — react 🎉 to enter! Winners drawn randomly.", readOnly: true },
+      { name: "events",        topic: "📅 Upcoming & active server events. Don't miss out on rewards!", readOnly: true },
     ],
   },
   {
-    name: "📂 SOCIAL",
+    name: "🌐 SOCIAL",
     channels: [
-      { name: "invites",     topic: "Check your invite stats with /invites.", readOnly: true },
-      { name: "suggestions", topic: "Suggest improvements for the server." },
+      { name: "invites",     topic: "🔗 Check your invite stats with /invites. Top inviters get rewards!", readOnly: true },
+      { name: "suggestions", topic: "💡 Suggest improvements for the server or CASES Beta. All ideas welcome!" },
     ],
   },
   {
-    name: "📂 VOICE",
+    name: "🔊 VOICE",
     channels: [
       { name: "🔊 General",       voice: true },
       { name: "🎮 Gaming",        voice: true },
@@ -814,17 +814,17 @@ const SERVER_STRUCTURE = [
     ],
   },
   {
-    name: "📂 TICKETS",
+    name: "🎫 TICKETS",
     channels: [
-      { name: "create-ticket", topic: "Click the button below to open a support ticket.", readOnly: true },
+      { name: "create-ticket", topic: "🎫 Need help? Click the button below to open a private support ticket!", readOnly: true },
     ],
   },
   {
-    name: "📂 STAFF",
+    name: "👮 STAFF",
     channels: [
-      { name: "staff-chat",     topic: "Staff-only discussion.", staffOnly: true },
-      { name: "logs",           topic: "Moderation logs.", staffOnly: true },
-      { name: "admin-commands", topic: "Staff-only bot commands.", staffOnly: true },
+      { name: "staff-chat",     topic: "👮 Staff-only discussion. Keep things professional & on-topic.", staffOnly: true },
+      { name: "logs",           topic: "📋 Moderation & event logs. All server activity is recorded here.", staffOnly: true },
+      { name: "admin-commands", topic: "⚙️ Staff-only bot commands. Use /warn /mute /kick /ban & admin tools here.", staffOnly: true },
     ],
   },
 ];
@@ -2956,9 +2956,10 @@ client.on("interactionCreate", async (interaction) => {
     let deleted = 0;
 
     const allCategories = guild.channels.cache.filter((c) => c.type === ChannelType.GuildCategory);
+    const KNOWN_CAT_NAMES = new Set(SERVER_STRUCTURE.map(c => baseName(c.name)));
     const toDelete = [];
     for (const [, cat] of allCategories) {
-      if (!cat.name.includes("📂")) continue;
+      if (!KNOWN_CAT_NAMES.has(baseName(cat.name))) continue;
       const base = baseName(cat.name);
       const dupe = allCategories.find((c) => c.id !== cat.id && baseName(c.name) === base);
       if (dupe) toDelete.push(cat);
