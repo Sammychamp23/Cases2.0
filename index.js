@@ -170,7 +170,7 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder().setName("post-rules").setDescription("📖 Post (or refresh) the rules embed in the rules-must-read channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-  new SlashCommandBuilder().setName("refresh-embeds").setDescription("🔄 Refresh welcome, goodbye, verification & rules embeds in one go")
+  new SlashCommandBuilder().setName("refresh-embeds").setDescription("🔄 Refresh & pin guide messages in ALL channels (welcome, rules, shop, rewards, commands, etc.)")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder().setName("change-log-channel").setDescription("📋 Change which channel mod & event logs are sent to")
     .addChannelOption((o) => o.setName("channel").setDescription("Channel to send logs to (omit to reset to auto-detect)").addChannelTypes(ChannelType.GuildText))
@@ -1130,12 +1130,13 @@ async function setupServer(guild, interaction) {
 
 async function sendTicketPanel(channel) {
   const built = CHANNEL_MESSAGES["create-ticket"]();
-  // Check if a panel already exists — fetch up to 100 messages (Discord max) so we
-  // don't re-post when there are many messages since the original panel
   try {
     const msgs = await channel.messages.fetch({ limit: 100 });
     const existing = msgs.find((m) => m.author.id === client.user?.id && m.components?.length > 0);
-    if (existing) return; // panel already posted
+    if (existing) {
+      await existing.edit({ embeds: [built.embed], components: [built.components] }).catch(() => {});
+      return;
+    }
   } catch { /* ignore */ }
   await channel.send({ embeds: [built.embed], components: [built.components] }).catch(console.error);
 }
@@ -3577,9 +3578,15 @@ client.on("interactionCreate", async (interaction) => {
     const results = [];
 
     const targets = [
-      { key: "welcome",         channelNames: ["welcome"],                          titleMatch: "welcome" },
-      { key: "verification",    channelNames: ["verification", "verify"],           titleMatch: "verification" },
-      { key: "rules-must-read", channelNames: ["rules-must-read", "rules"],         titleMatch: "rules" },
+      { key: "welcome",          channelNames: ["welcome"],                        titleMatch: "welcome" },
+      { key: "verification",     channelNames: ["verification", "verify"],         titleMatch: "verification" },
+      { key: "rules-must-read",  channelNames: ["rules-must-read", "rules"],       titleMatch: "rules" },
+      { key: "commands-guide",   channelNames: ["commands-guide"],                 titleMatch: "commands" },
+      { key: "shop",             channelNames: ["shop"],                           titleMatch: "shop" },
+      { key: "rewards",          channelNames: ["rewards"],                        titleMatch: "reward" },
+      { key: "giveaways",        channelNames: ["giveaways"],                      titleMatch: "giveaway" },
+      { key: "clan-recruitment", channelNames: ["clan-recruitment"],               titleMatch: "clan" },
+      { key: "suggestions",      channelNames: ["suggestions"],                    titleMatch: "suggestion" },
     ];
 
     for (const t of targets) {
@@ -3587,6 +3594,7 @@ client.on("interactionCreate", async (interaction) => {
       if (!ch) { results.push(`⚠️ \`#${t.channelNames[0]}\` — channel not found, skipped`); continue; }
       const embed = CHANNEL_MESSAGES[t.key](guild);
       try {
+        // Check pinned messages first
         const pins = await ch.messages.fetchPinned();
         const existing = pins.find((m) =>
           m.author.id === client.user?.id &&
@@ -3595,6 +3603,18 @@ client.on("interactionCreate", async (interaction) => {
         if (existing) {
           await existing.edit({ embeds: [embed] });
           results.push(`✅ ${ch} — updated existing pinned embed`);
+          continue;
+        }
+        // Also check recent messages if not pinned yet
+        const recent = await ch.messages.fetch({ limit: 50 });
+        const recentBot = recent.find((m) =>
+          m.author.id === client.user?.id &&
+          m.embeds?.[0]?.title?.toLowerCase?.().includes(t.titleMatch)
+        );
+        if (recentBot) {
+          await recentBot.edit({ embeds: [embed] });
+          await recentBot.pin().catch(() => {});
+          results.push(`✅ ${ch} — updated & pinned existing embed`);
           continue;
         }
       } catch { /* ignore */ }
@@ -3607,7 +3627,20 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    return interaction.editReply({ content: `🔄 **Refreshed embeds:**\n${results.join("\n")}\n\n_Note: the goodbye embed is sent automatically when a member leaves — it has no pinned version to refresh._` });
+    // Also refresh the ticket panel
+    const ticketCh = findChannel(guild, "create-ticket");
+    if (ticketCh) {
+      try {
+        await sendTicketPanel(ticketCh);
+        results.push(`✅ ${ticketCh} — ticket panel refreshed`);
+      } catch (err) {
+        results.push(`❌ #create-ticket — failed: ${err.message}`);
+      }
+    } else {
+      results.push(`⚠️ \`#create-ticket\` — channel not found, skipped`);
+    }
+
+    return interaction.editReply({ content: `🔄 **Refreshed embeds (${results.length} channels):**\n${results.join("\n")}\n\n_Note: goodbye & leaderboard messages post automatically — no pinned version to refresh._` });
   }
 
   // ── /toggle-updates ────────────────────────────────────────────────────────────
