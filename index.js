@@ -175,9 +175,13 @@ const commands = [
   new SlashCommandBuilder().setName("change-log-channel").setDescription("📋 Change which channel mod & event logs are sent to")
     .addChannelOption((o) => o.setName("channel").setDescription("Channel to send logs to (omit to reset to auto-detect)").addChannelTypes(ChannelType.GuildText))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-  new SlashCommandBuilder().setName("give-coins").setDescription("💰 Give coins to yourself or another member")
+  new SlashCommandBuilder().setName("give-coins").setDescription("💰 [Head Admin] Give any amount of coins to yourself or another member")
+    .addIntegerOption((o) => o.setName("amount").setDescription("Number of coins to give").setRequired(true).setMinValue(1))
     .addUserOption((o) => o.setName("user").setDescription("Member to give coins to (omit to give to yourself)").setRequired(false))
-    .addIntegerOption((o) => o.setName("amount").setDescription("Number of coins to give").setRequired(true).setMinValue(1).setMaxValue(1000000))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("remove-coins").setDescription("💸 [Head Admin] Remove any amount of coins from yourself or another member")
+    .addIntegerOption((o) => o.setName("amount").setDescription("Number of coins to remove").setRequired(true).setMinValue(1))
+    .addUserOption((o) => o.setName("user").setDescription("Member to remove coins from (omit for yourself)").setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ].map((cmd) => cmd.toJSON());
 
@@ -1972,7 +1976,7 @@ client.on("interactionCreate", async (interaction) => {
       r.name.toLowerCase().replace(/[\s_-]+/g, "") === "headadmin"
     );
   }
-  const HEAD_ADMIN_COMMANDS = ["setup-server", "test-update", "organize_server"];
+  const HEAD_ADMIN_COMMANDS = ["setup-server", "test-update", "organize_server", "give-coins", "remove-coins"];
   if (commandName && HEAD_ADMIN_COMMANDS.includes(commandName) && !isHeadAdmin(interaction.member)) {
     return interaction.reply({
       content: "🚫 This command is restricted to **Head Admins** only.",
@@ -2562,6 +2566,29 @@ client.on("interactionCreate", async (interaction) => {
       .setColor(0xfee75c)
       .setThumbnail(target.displayAvatarURL())
       .setFooter({ text: `Given by ${interaction.user.tag}` })
+      .setTimestamp();
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // ── /remove-coins ─────────────────────────────────────────────────────────────
+  if (commandName === "remove-coins") {
+    const target  = interaction.options.getUser("user") ?? interaction.user;
+    const amount  = interaction.options.getInteger("amount");
+    const isSelf  = target.id === interaction.user.id;
+    const current = getCoins(target.id);
+    const deduct  = Math.min(amount, current);
+    coins.set(target.id, current - deduct);
+    const newBal  = getCoins(target.id);
+    const embed = new EmbedBuilder()
+      .setTitle("💸 Coins Removed!")
+      .setDescription(
+        isSelf
+          ? `✅ Removed **${deduct.toLocaleString()} coins** from your own balance.\n> New balance: **${newBal.toLocaleString()} coins**`
+          : `✅ Removed **${deduct.toLocaleString()} coins** from ${target}'s balance.\n> Their new balance: **${newBal.toLocaleString()} coins**`
+      )
+      .setColor(0xed4245)
+      .setThumbnail(target.displayAvatarURL())
+      .setFooter({ text: `Removed by ${interaction.user.tag}` })
       .setTimestamp();
     return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
