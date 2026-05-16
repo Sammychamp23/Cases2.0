@@ -1,4 +1,5 @@
 try { require("dotenv").config(); } catch (_) {}
+const fs = require("fs");
 
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
@@ -208,6 +209,7 @@ const commands = [
   new SlashCommandBuilder().setName("streak").setDescription("🔥 View your current daily login streak and next reward"),
   new SlashCommandBuilder().setName("achievementprogress").setDescription("📊 See detailed progress toward every achievement"),
   new SlashCommandBuilder().setName("achievementleaderboard").setDescription("🏆 See who has the most achievements in this server"),
+  new SlashCommandBuilder().setName("equip-all").setDescription("✨ Equip all role items from your inventory at once"),
   new SlashCommandBuilder().setName("buyall").setDescription("🛒 Buy all shop items you don't already own (shows cost & confirmation first)"),
   new SlashCommandBuilder().setName("joke").setDescription("😂 Get a random joke"),
   new SlashCommandBuilder().setName("8ball").setDescription("🎱 Ask the magic 8 ball a question")
@@ -231,7 +233,7 @@ const CMD_CHANNEL = {
   inventory: "bot-commands", equip: "bot-commands", achievements: "bot-commands",
   joke: "bot-commands", "8ball": "bot-commands", rps: "bot-commands",
   roast: "bot-commands", hug: "bot-commands", coinflip: "bot-commands", trivia: "bot-commands",
-  pay: "bot-commands", streak: "bot-commands",
+  "equip-all": "bot-commands", pay: "bot-commands", streak: "bot-commands",
   achievementprogress: "bot-commands", achievementleaderboard: "bot-commands",
   setcoins: "admin-commands", givexp: "admin-commands", removexp: "admin-commands",
   setxp: "admin-commands", resetxp: "admin-commands",
@@ -377,21 +379,27 @@ async function logEconomyAction(guild, executor, targetUser, action, amount) {
 
 async function handleLevelUp(member, newLevel) {
   const guild = member.guild;
-  const roleName = LEVEL_ROLES[newLevel];
 
-  if (roleName) {
-    let role = guild.roles.cache.find((r) => r.name === roleName);
-    if (!role) {
-      try { role = await guild.roles.create({ name: roleName, reason: "Level reward" }); } catch { /* ignore */ }
+  // Award ALL level roles earned up to newLevel (catches skipped milestones on big XP jumps)
+  const newRoles = [];
+  for (const [threshold, roleName] of Object.entries(LEVEL_ROLES)) {
+    if (Number(threshold) <= newLevel) {
+      let role = guild.roles.cache.find((r) => r.name === roleName);
+      if (!role) {
+        try { role = await guild.roles.create({ name: roleName, reason: "Level reward" }); } catch { /* ignore */ }
+      }
+      if (role && !member.roles.cache.has(role.id)) {
+        try { await member.roles.add(role); newRoles.push(roleName); } catch { /* ignore */ }
+      }
     }
-    if (role) { try { await member.roles.add(role); } catch { /* ignore */ } }
   }
 
   const ch = findChannel(guild, "bot-commands");
   if (ch) {
+    const roleText = newRoles.length ? ` You've earned: **${newRoles.join(", ")}**!` : "";
     const embed = new EmbedBuilder()
       .setTitle("🎉 Level Up!")
-      .setDescription(`${member} reached **Level ${newLevel}**!${roleName ? ` You've earned the **${roleName}** role!` : ""}\n\nCheck your progress with \`/rank\``)
+      .setDescription(`${member} reached **Level ${newLevel}**!${roleText}\n\nCheck your progress with \`/rank\``)
       .setColor(0xfee75c)
       .setThumbnail(member.user.displayAvatarURL())
       .setTimestamp();
@@ -586,6 +594,69 @@ const TRIVIA_QUESTIONS = [
 
 const FUN_COOLDOWN_MS = 30 * 1000; // 30s between fun commands
 
+// ── Persistence (JSON file autosave) ──────────────────────────────────────────
+
+const PERSIST_FILE = "./botdata.json";
+
+function serializeMap(map) {
+  const out = {};
+  for (const [k, v] of map.entries()) {
+    out[k] = v instanceof Map ? { __map: true, entries: [...v.entries()] } : v;
+  }
+  return out;
+}
+
+function deserializeMap(obj) {
+  const map = new Map();
+  for (const [k, v] of Object.entries(obj ?? {})) {
+    map.set(k, v && v.__map ? new Map(v.entries) : v);
+  }
+  return map;
+}
+
+function saveData() {
+  try {
+    const payload = {
+      coins:        serializeMap(coins),
+      xpStore:      serializeMap(xpStore),
+      loginStreak:  serializeMap(loginStreak),
+      lastDaily:    serializeMap(lastDaily),
+      lastWeekly:   serializeMap(lastWeekly),
+      achievementData: serializeMap(achievementData),
+      userInventory:   serializeMap(userInventory),
+      userBoosts:      serializeMap(userBoosts),
+      msgCount:        serializeMap(msgCount),
+      inviteCount:     serializeMap(inviteCount),
+    };
+    fs.writeFileSync(PERSIST_FILE, JSON.stringify(payload), "utf8");
+  } catch (e) { console.error("[Persist] Save failed:", e.message); }
+}
+
+function loadData() {
+  try {
+    if (!fs.existsSync(PERSIST_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(PERSIST_FILE, "utf8"));
+    if (raw.coins)        for (const [k,v] of Object.entries(raw.coins))        coins.set(k, v);
+    if (raw.xpStore)      for (const [k,v] of Object.entries(raw.xpStore))      xpStore.set(k, v);
+    if (raw.loginStreak)  for (const [k,v] of Object.entries(raw.loginStreak))  loginStreak.set(k, v);
+    if (raw.lastDaily)    for (const [k,v] of Object.entries(raw.lastDaily))    lastDaily.set(k, v);
+    if (raw.lastWeekly)   for (const [k,v] of Object.entries(raw.lastWeekly))   lastWeekly.set(k, v);
+    if (raw.msgCount)     for (const [k,v] of Object.entries(raw.msgCount))     msgCount.set(k, v);
+    if (raw.inviteCount)  for (const [k,v] of Object.entries(raw.inviteCount))  inviteCount.set(k, v);
+    if (raw.userBoosts)   for (const [k,v] of Object.entries(raw.userBoosts))   userBoosts.set(k, v);
+    if (raw.achievementData) for (const [k,v] of Object.entries(raw.achievementData)) achievementData.set(k, v);
+    if (raw.userInventory)   for (const [k,v] of Object.entries(raw.userInventory)) {
+      userInventory.set(k, v && v.__map ? new Map(v.entries) : new Map(Object.entries(v ?? {})));
+    }
+    console.log("[Persist] Data loaded from", PERSIST_FILE);
+  } catch (e) { console.error("[Persist] Load failed:", e.message); }
+}
+
+// Save every 5 minutes + on shutdown
+setInterval(saveData, 5 * 60 * 1000);
+process.on("SIGTERM", () => { saveData(); process.exit(0); });
+process.on("SIGINT",  () => { saveData(); process.exit(0); });
+
 function checkFunCooldown(userId, cmd) {
   const key = `${userId}:${cmd}`;
   const last = funCooldowns.get(key) ?? 0;
@@ -598,14 +669,23 @@ function checkFunCooldown(userId, cmd) {
 // ── Required roles — auto-created on startup ───────────────────────────────────
 
 const REQUIRED_ROLES = [
+  // Access roles
+  { name: "Unverified Member",  color: 0xed4245 },
   { name: "Member",             color: 0x5865f2 },
+  // Level roles
   { name: "Active",             color: 0x57f287 },
   { name: "Regular",            color: 0x5865f2 },
   { name: "Veteran",            color: 0xab47bc },
   { name: "Elite",              color: 0xff7043 },
+  // Achievement roles
   { name: "Achievement Hunter", color: 0xfee75c },
   { name: "Legendary Buyer",    color: 0xed4245 },
   { name: "Trivia Master",      color: 0x00b0f4 },
+  { name: "Voice Master",       color: 0x1abc9c },
+  { name: "Devoted",            color: 0xe67e22 },
+  { name: "Legend",             color: 0xffd700 },
+  { name: "Scout",              color: 0x3498db },
+  // Shop roles
   { name: "Chatter",            color: 0x57f287 },
   { name: "Regular+",           color: 0x5865f2 },
   { name: "Veteran+",           color: 0xab47bc },
@@ -632,7 +712,8 @@ function buildShopEmbed(page = 0) {
   );
   const PAGE_SIZE = 6;
   const pages = Math.ceil(sorted.length / PAGE_SIZE);
-  const slice = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const clampedPage = Math.max(0, Math.min(page, pages - 1));
+  const slice = sorted.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
 
   const fields = slice.map((item) => {
     const stock  = getStock(item.id);
@@ -647,18 +728,36 @@ function buildShopEmbed(page = 0) {
     };
   });
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle("🛒 Coin Shop")
     .setDescription(
       `Spend your coins on roles, boosts, and perks!\n` +
       `Use \`/buy <item id>\` to purchase · \`/inventory\` to view owned items\n` +
       `⭐ **Daily Deals** rotate every 24h at 20% off!\n\n` +
-      `Page ${page + 1}/${pages} — run \`/shop\` again to browse`
+      `Page **${clampedPage + 1}/${pages}**`
     )
     .addFields(fields)
     .setColor(0xfee75c)
     .setFooter({ text: `💡 Tip: Popular items may cost slightly more due to demand!` })
     .setTimestamp();
+
+  return { embed, pages, page: clampedPage };
+}
+
+function buildShopRow(page, pages) {
+  if (pages <= 1) return null;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`shop_page_${page - 1}`)
+      .setLabel("◀ Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId(`shop_page_${page + 1}`)
+      .setLabel("Next ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= pages - 1),
+  );
 }
 
 // ── Achievement catalog ────────────────────────────────────────────────────────
@@ -1451,6 +1550,9 @@ client.once("clientReady", async () => {
     }
   }
 
+  // Load persisted data on startup
+  loadData();
+
   console.log("All systems online.");
 });
 
@@ -1993,6 +2095,31 @@ client.on("guildMemberAdd", async (member) => {
       .setFooter({ text: `${guild.name} • We're happy you're here!` })
       .setTimestamp();
     welcomeCh.send({ content: `${member}`, embeds: [embed] }).catch(() => {});
+
+    // ── DM the new member a personal welcome ─────────────────────────────────
+    const dmEmbed = new EmbedBuilder()
+      .setTitle(`👋 Welcome to ${guild.name}!`)
+      .setDescription(
+        `Hey **${member.user.username}**, we're so glad you're here!\n\n` +
+        `Here's how to get started:\n\n` +
+        `**1. Read the rules** — Head to the #rules channel and click **I Agree** to unlock the server.\n` +
+        `**2. Introduce yourself** — Say hi in #general-chat once you're verified!\n` +
+        `**3. Earn coins & XP** — Just chat, join voice, and complete daily challenges to level up.\n` +
+        `**4. Visit the shop** — Use \`/shop\` to browse roles and perks you can buy with your coins.\n\n` +
+        `**Server Rules (quick summary):**\n` +
+        `• Be respectful to everyone\n` +
+        `• No spam, harassment, or slurs\n` +
+        `• Keep content appropriate\n` +
+        `• No advertising without permission\n` +
+        `• Follow Discord's Terms of Service\n\n` +
+        `🎮 We're the Cases community — enjoy your stay!\n` +
+        `**[Play CASES Beta on Roblox →](https://www.roblox.com/games/106780119627121/CASES-Beta)**`
+      )
+      .setColor(0x5865f2)
+      .setThumbnail(guild.iconURL() ?? member.user.displayAvatarURL())
+      .setFooter({ text: `${guild.name} • DM a staff member if you need help!` })
+      .setTimestamp();
+    member.user.send({ embeds: [dmEmbed] }).catch(() => {}); // silently ignore if DMs are closed
   }
 
   // ── Auto-assign Unverified Member role ──────────────────────────────────────
@@ -2204,6 +2331,13 @@ client.on("interactionCreate", async (interaction) => {
     }
     try {
       await member.roles.add(memberRole);
+      // Auto-remove Unverified Member role now that they're verified
+      const unverifiedRole = guild.roles.cache.find((r) =>
+        ["unverified member", "unverified"].includes(r.name.toLowerCase())
+      );
+      if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
+        await member.roles.remove(unverifiedRole).catch(() => {});
+      }
       return interaction.reply({ content: "✅ Welcome! You've been given the **Member** role and now have full access to the server. Enjoy! 🎉", flags: MessageFlags.Ephemeral });
     } catch {
       return interaction.reply({ content: "❌ Failed to assign the **Member** role. Make sure the bot's role is above **Member** in Server Settings → Roles.", flags: MessageFlags.Ephemeral });
@@ -2552,8 +2686,9 @@ client.on("interactionCreate", async (interaction) => {
   // ── /shop ─────────────────────────────────────────────────────────────────────
   if (commandName === "shop") {
     const page = 0;
-    const embed = buildShopEmbed(page);
-    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    const { embed, pages } = buildShopEmbed(page);
+    const row = buildShopRow(page, pages);
+    return interaction.reply({ embeds: [embed], components: row ? [row] : [], flags: MessageFlags.Ephemeral });
   }
 
   // ── /buy ──────────────────────────────────────────────────────────────────────
@@ -4364,11 +4499,63 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ embeds: [
       new EmbedBuilder()
         .setTitle("🧠 Trivia Time!")
-        .setDescription(`**${q.question}**\n\n${q.choices.map((c,i) => `${letters[i]} ${c}`).join("\n")}\n\n⏰ You have **30 seconds** to answer!\n🏆 Reward: **${q.reward} coins** if correct`)
+        .setDescription(`**${q.q}**\n\n${q.choices.map((c,i) => `${letters[i]} ${c}`).join("\n")}\n\n⏰ You have **30 seconds** to answer!\n🏆 Reward: **${q.reward} coins** if correct`)
         .setColor(0x5865f2)
         .setFooter({ text: `Requested by ${interaction.user.username}` })
         .setTimestamp()
     ], components: [row] });
+  }
+
+  // ── Button: shop_page_N ───────────────────────────────────────────────────────
+  if (interaction.isButton() && /^shop_page_\d+$/.test(interaction.customId)) {
+    const targetPage = parseInt(interaction.customId.replace("shop_page_", ""), 10);
+    const { embed, pages, page } = buildShopEmbed(targetPage);
+    const row = buildShopRow(page, pages);
+    return interaction.update({ embeds: [embed], components: row ? [row] : [] });
+  }
+
+  // ── /equip-all ────────────────────────────────────────────────────────────────
+  if (commandName === "equip-all") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const inv      = getUserInventory(interaction.user.id);
+    const roleItems = SHOP_CATALOG.filter((item) => item.type === "role" && inv.has(item.id));
+
+    if (roleItems.length === 0) {
+      return interaction.editReply({ content: "📦 You don't own any role items yet. Use `/buy` to get some from the shop!" });
+    }
+
+    const equipped = [];
+    const skipped  = [];
+    const failed   = [];
+
+    for (const item of roleItems) {
+      let role = interaction.guild.roles.cache.find((r) => r.name === item.roleName);
+      if (!role) {
+        try { role = await interaction.guild.roles.create({ name: item.roleName, reason: "equip-all" }); }
+        catch { failed.push(item.name); continue; }
+      }
+      if (interaction.member.roles.cache.has(role.id)) {
+        skipped.push(item.name);
+        continue;
+      }
+      try {
+        await interaction.member.roles.add(role);
+        equipped.push(`${RARITY_EMOJI[item.rarity]} **${item.name}** → \`${item.roleName}\``);
+      } catch { failed.push(item.name); }
+    }
+
+    const lines = [];
+    if (equipped.length) lines.push(`✅ **Equipped (${equipped.length}):**\n${equipped.join("\n")}`);
+    if (skipped.length)  lines.push(`⏭️ **Already equipped (${skipped.length}):** ${skipped.join(", ")}`);
+    if (failed.length)   lines.push(`❌ **Failed (${failed.length}):** ${failed.join(", ")}`);
+
+    return interaction.editReply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("✨ Equip All Complete")
+        .setDescription(lines.join("\n\n") || "Nothing to do.")
+        .setColor(equipped.length ? 0x57f287 : 0x99aab5)
+        .setTimestamp()
+    ]});
   }
 
   // ── Button: trivia_0 / trivia_1 / trivia_2 ────────────────────────────────────
