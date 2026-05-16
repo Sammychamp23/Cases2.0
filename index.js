@@ -175,32 +175,10 @@ const commands = [
   new SlashCommandBuilder().setName("change-log-channel").setDescription("📋 Change which channel mod & event logs are sent to")
     .addChannelOption((o) => o.setName("channel").setDescription("Channel to send logs to (omit to reset to auto-detect)").addChannelTypes(ChannelType.GuildText))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-
-  // Fun
-  new SlashCommandBuilder().setName("8ball").setDescription("🎱 Ask the magic 8 ball a question")
-    .addStringOption((o) => o.setName("question").setDescription("Your yes/no question").setRequired(true)),
-  new SlashCommandBuilder().setName("flip").setDescription("🪙 Flip a coin — heads or tails?"),
-  new SlashCommandBuilder().setName("roll").setDescription("🎲 Roll dice (e.g. 2d6, d20)")
-    .addStringOption((o) => o.setName("dice").setDescription("Dice notation like 2d6 or d20 (default: d20)")),
-  new SlashCommandBuilder().setName("rps").setDescription("✊ Play Rock Paper Scissors against the bot")
-    .addStringOption((o) =>
-      o.setName("choice").setDescription("Your move").setRequired(true)
-        .addChoices(
-          { name: "✊ Rock",     value: "rock"     },
-          { name: "✋ Paper",    value: "paper"    },
-          { name: "✌️ Scissors", value: "scissors" },
-        )
-    ),
-  new SlashCommandBuilder().setName("trivia").setDescription("🧠 Answer a random trivia question for coins & XP"),
-  new SlashCommandBuilder().setName("joke").setDescription("😂 Get a random joke"),
-  new SlashCommandBuilder().setName("roast").setDescription("🔥 Roast someone (all in good fun)")
-    .addUserOption((o) => o.setName("user").setDescription("Who to roast (defaults to yourself)")),
-  new SlashCommandBuilder().setName("hug").setDescription("🤗 Give someone a warm hug")
-    .addUserOption((o) => o.setName("user").setDescription("Who to hug").setRequired(true)),
-  new SlashCommandBuilder().setName("slap").setDescription("👋 Playfully slap someone")
-    .addUserOption((o) => o.setName("user").setDescription("Who to slap").setRequired(true)),
-  new SlashCommandBuilder().setName("kiss").setDescription("💋 Send someone a kiss")
-    .addUserOption((o) => o.setName("user").setDescription("Who to kiss").setRequired(true)),
+  new SlashCommandBuilder().setName("give-coins").setDescription("💰 Give coins to yourself or another member")
+    .addUserOption((o) => o.setName("user").setDescription("Member to give coins to (omit to give to yourself)").setRequired(false))
+    .addIntegerOption((o) => o.setName("amount").setDescription("Number of coins to give").setRequired(true).setMinValue(1).setMaxValue(1000000))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ].map((cmd) => cmd.toJSON());
 
 // ── Command → required channel ─────────────────────────────────────────────────
@@ -211,9 +189,6 @@ const CMD_CHANNEL = {
   activity: "bot-commands", invites: "bot-commands", challenges: "bot-commands",
   shop: "bot-commands", buy: "bot-commands", inventory: "bot-commands",
   equip: "bot-commands", achievements: "bot-commands",
-  "8ball": "bot-commands", flip: "bot-commands", roll: "bot-commands",
-  rps: "bot-commands", trivia: "bot-commands", joke: "bot-commands",
-  roast: "bot-commands", hug: "bot-commands", slap: "bot-commands", kiss: "bot-commands",
   warn: "admin-commands", mute: "admin-commands", kick: "admin-commands", ban: "admin-commands",
 };
 
@@ -957,9 +932,6 @@ const CHANNEL_MESSAGES = {
       `> \`/exclude-2x\` — block a channel from ever being chosen as a 2x drop zone\n\n` +
       `**🎉 Events**\n` +
       `\`/giveaway\` 🎊 · \`/session-start\` 🎮\n\n` +
-      `**🎮 Fun** *(use in #bot-commands)*\n` +
-      `\`/8ball\` 🎱 · \`/flip\` 🪙 · \`/roll\` 🎲 · \`/rps\` ✊ · \`/trivia\` 🧠 · \`/joke\` 😂\n` +
-      `\`/roast\` 🔥 · \`/hug\` 🤗 · \`/slap\` 👋 · \`/kiss\` 💋\n\n` +
       `**🎫 Support**\n` +
       `Click **🎫 Open a Ticket** in #create-ticket or use \`/ticket\` anywhere`
     )
@@ -1475,29 +1447,6 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // ── Trivia answer check ────────────────────────────────────────────────────
-  const triviaGame = activeTriviaGames.get(message.channelId);
-  if (triviaGame && !message.author.bot && Date.now() < triviaGame.expiresAt) {
-    const guess = message.content.trim().toLowerCase();
-    if (guess.includes(triviaGame.answer)) {
-      activeTriviaGames.delete(message.channelId);
-      const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
-      addCoins(message.author.id, 50, message.channelId);
-      if (member) await addXP(member, 25, message.channelId);
-      const winEmbed = new EmbedBuilder()
-        .setTitle("🎉 Trivia — Correct!")
-        .setDescription(
-          `${message.author} got it right!\n\n` +
-          `✅ **Answer:** ${triviaGame.display}\n\n` +
-          `🎁 **Reward:** +50 coins & +25 XP`
-        )
-        .setColor(0x57f287)
-        .setThumbnail(message.author.displayAvatarURL())
-        .setTimestamp();
-      message.channel.send({ embeds: [winEmbed] }).catch(() => {});
-    }
-  }
-
   // ── AI chat: reply when bot is @mentioned OR user replies to a bot message ───
   const isMention   = message.mentions.has(client.user);
   const isReplyToBot = message.reference?.messageId &&
@@ -1993,106 +1942,6 @@ client.on("guildCreate", async (guild) => {
     inviteCache.set(guild.id, map);
   } catch { /* ignore */ }
 });
-
-// ── Fun command data ───────────────────────────────────────────────────────────
-
-const EIGHTBALL_RESPONSES = [
-  // Positive
-  { text: "It is certain.",            type: "positive" },
-  { text: "It is decidedly so.",        type: "positive" },
-  { text: "Without a doubt.",           type: "positive" },
-  { text: "Yes, definitely.",           type: "positive" },
-  { text: "You may rely on it.",        type: "positive" },
-  { text: "As I see it, yes.",          type: "positive" },
-  { text: "Most likely.",               type: "positive" },
-  { text: "Outlook good.",              type: "positive" },
-  { text: "Yes.",                        type: "positive" },
-  { text: "Signs point to yes.",        type: "positive" },
-  // Neutral
-  { text: "Reply hazy, try again.",     type: "neutral"  },
-  { text: "Ask again later.",           type: "neutral"  },
-  { text: "Better not tell you now.",   type: "neutral"  },
-  { text: "Cannot predict now.",        type: "neutral"  },
-  { text: "Concentrate and ask again.", type: "neutral"  },
-  // Negative
-  { text: "Don't count on it.",         type: "negative" },
-  { text: "My reply is no.",            type: "negative" },
-  { text: "My sources say no.",         type: "negative" },
-  { text: "Outlook not so good.",       type: "negative" },
-  { text: "Very doubtful.",             type: "negative" },
-];
-
-const JOKES = [
-  { setup: "Why don't scientists trust atoms?",                                    punchline: "Because they make up everything!" },
-  { setup: "I told my wife she was drawing her eyebrows too high.",                punchline: "She looked surprised." },
-  { setup: "Why did the scarecrow win an award?",                                  punchline: "Because he was outstanding in his field!" },
-  { setup: "I'm reading a book about anti-gravity.",                               punchline: "It's impossible to put down." },
-  { setup: "Did you hear about the mathematician who's afraid of negative numbers?", punchline: "He'll stop at nothing to avoid them." },
-  { setup: "Why can't you give Elsa a balloon?",                                   punchline: "Because she'll let it go." },
-  { setup: "What do you call cheese that isn't yours?",                            punchline: "Nacho cheese." },
-  { setup: "Why did the bicycle fall over?",                                        punchline: "Because it was two-tired." },
-  { setup: "What do you call a fake noodle?",                                       punchline: "An impasta." },
-  { setup: "How do you organize a space party?",                                    punchline: "You planet." },
-  { setup: "Why did the coffee file a police report?",                              punchline: "It got mugged." },
-  { setup: "What do you call a sleeping dinosaur?",                                 punchline: "A dino-snore." },
-  { setup: "Why don't eggs tell jokes?",                                            punchline: "They'd crack each other up." },
-  { setup: "What do you call a fish without eyes?",                                 punchline: "A fsh." },
-  { setup: "Why did the math book look so sad?",                                    punchline: "Because it had too many problems." },
-  { setup: "What do you call a bear with no teeth?",                                punchline: "A gummy bear." },
-  { setup: "Why can't Elsa have a balloon?",                                        punchline: "She'll let it go." },
-  { setup: "What do you call a lazy kangaroo?",                                     punchline: "A pouch potato." },
-  { setup: "Why did the golfer bring extra pants?",                                 punchline: "In case he got a hole in one." },
-  { setup: "What do you call a pile of cats?",                                      punchline: "A meowtain." },
-];
-
-const ROASTS = [
-  "Your Wi-Fi password is probably your pet's name. Twice.",
-  "You're the human equivalent of a participation trophy.",
-  "I'd roast you harder but my mom said I'm not allowed to burn trash.",
-  "You're not stupid — you just have bad luck thinking.",
-  "If brains were petrol, you wouldn't have enough to power a fly's motorbike around the inside of a Cheerio.",
-  "You're the reason they put instructions on shampoo bottles.",
-  "I'd explain it to you but I left my crayons at home.",
-  "You're like a cloud — when you disappear, it's a beautiful day.",
-  "I've seen better heads on a glass of beer.",
-  "You're proof that even evolution makes mistakes sometimes.",
-  "Your secrets are safe with me. I never listen when you talk anyway.",
-  "You're not the dumbest person in the world, but you better hope they don't die.",
-  "I'd agree with you but then we'd both be wrong.",
-  "You have the energy of a dying phone battery.",
-  "You're like a software update — nobody asked for you and you show up at the worst time.",
-  "Your cooking is so bad even the smoke alarm cheers you on.",
-  "You're the type of person to trip over a wireless connection.",
-  "I'd call you a tool but that implies you're actually useful.",
-  "You're like a Monday — nobody is happy to see you.",
-  "You bring everyone so much joy... when you leave the room.",
-];
-
-const TRIVIA_QUESTIONS = [
-  { q: "What is the capital of France?",                                    a: "paris",      display: "Paris" },
-  { q: "How many sides does a hexagon have?",                               a: "6",          display: "6" },
-  { q: "What planet is known as the Red Planet?",                           a: "mars",       display: "Mars" },
-  { q: "What is the largest ocean on Earth?",                               a: "pacific",    display: "Pacific Ocean" },
-  { q: "Who painted the Mona Lisa?",                                        a: "da vinci",   display: "Leonardo da Vinci" },
-  { q: "What is the chemical symbol for gold?",                             a: "au",         display: "Au" },
-  { q: "How many bones are in the adult human body?",                       a: "206",        display: "206" },
-  { q: "What is the fastest land animal?",                                  a: "cheetah",    display: "Cheetah" },
-  { q: "In what year did World War II end?",                                a: "1945",       display: "1945" },
-  { q: "What is the smallest planet in our solar system?",                  a: "mercury",    display: "Mercury" },
-  { q: "What language has the most native speakers in the world?",          a: "mandarin",   display: "Mandarin Chinese" },
-  { q: "How many strings does a standard guitar have?",                     a: "6",          display: "6" },
-  { q: "What is the hardest natural substance on Earth?",                   a: "diamond",    display: "Diamond" },
-  { q: "Which country invented pizza?",                                     a: "italy",      display: "Italy" },
-  { q: "What is the square root of 144?",                                   a: "12",         display: "12" },
-  { q: "What gas do plants absorb from the atmosphere?",                    a: "carbon dioxide", display: "Carbon dioxide (CO₂)" },
-  { q: "How many continents are there on Earth?",                           a: "7",          display: "7" },
-  { q: "What is the longest river in the world?",                           a: "nile",       display: "The Nile" },
-  { q: "What sport is played at Wimbledon?",                                a: "tennis",     display: "Tennis" },
-  { q: "What is the currency of Japan?",                                    a: "yen",        display: "Yen" },
-];
-
-// Active trivia sessions: channelId -> { question, answer, display, expiresAt, messageId }
-const activeTriviaGames = new Map();
 
 // ── Interactions ───────────────────────────────────────────────────────────────
 
@@ -2692,6 +2541,27 @@ client.on("interactionCreate", async (interaction) => {
       )
       .setColor(0xfee75c)
       .setThumbnail(interaction.user.displayAvatarURL())
+      .setTimestamp();
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+
+  // ── /give-coins ───────────────────────────────────────────────────────────────
+  if (commandName === "give-coins") {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    const amount  = interaction.options.getInteger("amount");
+    const isSelf  = target.id === interaction.user.id;
+    addCoins(target.id, amount, null);
+    const newBal = getCoins(target.id);
+    const embed = new EmbedBuilder()
+      .setTitle("💰 Coins Given!")
+      .setDescription(
+        isSelf
+          ? `✅ Added **${amount.toLocaleString()} coins** to your own balance.\n> New balance: **${newBal.toLocaleString()} coins**`
+          : `✅ Added **${amount.toLocaleString()} coins** to ${target}'s balance.\n> Their new balance: **${newBal.toLocaleString()} coins**`
+      )
+      .setColor(0xfee75c)
+      .setThumbnail(target.displayAvatarURL())
+      .setFooter({ text: `Given by ${interaction.user.tag}` })
       .setTimestamp();
     return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
@@ -3839,241 +3709,6 @@ client.on("interactionCreate", async (interaction) => {
                  : "The bot will silently track updates but **won't post announcements** until re-enabled."),
       flags: MessageFlags.Ephemeral,
     });
-  }
-
-  // ── /8ball ────────────────────────────────────────────────────────────────────
-  if (commandName === "8ball") {
-    const question = interaction.options.getString("question");
-    const response = EIGHTBALL_RESPONSES[Math.floor(Math.random() * EIGHTBALL_RESPONSES.length)];
-    const color = response.type === "positive" ? 0x57f287 : response.type === "negative" ? 0xed4245 : 0xfee75c;
-    const emoji = response.type === "positive" ? "🟢" : response.type === "negative" ? "🔴" : "🟡";
-    const embed = new EmbedBuilder()
-      .setTitle("🎱 Magic 8 Ball")
-      .addFields(
-        { name: "❓ Question", value: question,                          inline: false },
-        { name: "🎱 Answer",   value: `${emoji} **${response.text}**`,  inline: false },
-      )
-      .setColor(color)
-      .setFooter({ text: `Asked by ${interaction.user.username}` })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /flip ─────────────────────────────────────────────────────────────────────
-  if (commandName === "flip") {
-    const result = Math.random() < 0.5 ? "Heads" : "Tails";
-    const emoji  = result === "Heads" ? "🪙" : "🌕";
-    const embed = new EmbedBuilder()
-      .setTitle(`${emoji} Coin Flip`)
-      .setDescription(`The coin landed on... **${result}**!`)
-      .setColor(result === "Heads" ? 0xfee75c : 0x99aab5)
-      .setFooter({ text: `Flipped by ${interaction.user.username}` })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /roll ─────────────────────────────────────────────────────────────────────
-  if (commandName === "roll") {
-    const input = (interaction.options.getString("dice") ?? "d20").toLowerCase().trim();
-    const match = input.match(/^(\d+)?d(\d+)$/);
-    if (!match) {
-      return interaction.reply({ content: "❌ Invalid dice notation. Use formats like `d20`, `2d6`, or `3d8`.", flags: MessageFlags.Ephemeral });
-    }
-    const count = Math.min(parseInt(match[1] ?? "1"), 20); // max 20 dice
-    const sides = parseInt(match[2]);
-    if (sides < 2 || sides > 1000) {
-      return interaction.reply({ content: "❌ Dice must have between 2 and 1000 sides.", flags: MessageFlags.Ephemeral });
-    }
-    const rolls = Array.from({ length: count }, () => Math.floor(Math.random() * sides) + 1);
-    const total = rolls.reduce((a, b) => a + b, 0);
-    const embed = new EmbedBuilder()
-      .setTitle(`🎲 Dice Roll — ${count}d${sides}`)
-      .addFields(
-        { name: "🎲 Rolls",  value: rolls.join(", "),                                    inline: false },
-        { name: "➕ Total",  value: `**${total}**${count > 1 ? ` (avg: ${(total / count).toFixed(1)})` : ""}`, inline: false },
-      )
-      .setColor(0x5865f2)
-      .setFooter({ text: `Rolled by ${interaction.user.username}` })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /rps ──────────────────────────────────────────────────────────────────────
-  if (commandName === "rps") {
-    const choices   = ["rock", "paper", "scissors"];
-    const emojis    = { rock: "✊", paper: "✋", scissors: "✌️" };
-    const userChoice = interaction.options.getString("choice");
-    const botChoice  = choices[Math.floor(Math.random() * choices.length)];
-
-    let result, color;
-    if (userChoice === botChoice) {
-      result = "🤝 It's a **tie**!";
-      color  = 0xfee75c;
-    } else if (
-      (userChoice === "rock"     && botChoice === "scissors") ||
-      (userChoice === "paper"    && botChoice === "rock")     ||
-      (userChoice === "scissors" && botChoice === "paper")
-    ) {
-      result = "🏆 You **win**!";
-      color  = 0x57f287;
-    } else {
-      result = "💀 You **lose**!";
-      color  = 0xed4245;
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle("✊ Rock Paper Scissors")
-      .addFields(
-        { name: `${interaction.user.username}`, value: `${emojis[userChoice]} **${userChoice.charAt(0).toUpperCase() + userChoice.slice(1)}**`, inline: true },
-        { name: "vs",                            value: "⚔️",                                                                                     inline: true },
-        { name: "Bot",                           value: `${emojis[botChoice]} **${botChoice.charAt(0).toUpperCase() + botChoice.slice(1)}**`,     inline: true },
-        { name: "Result",                        value: result,                                                                                    inline: false },
-      )
-      .setColor(color)
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /trivia ───────────────────────────────────────────────────────────────────
-  if (commandName === "trivia") {
-    // Only one active trivia per channel at a time
-    if (activeTriviaGames.has(interaction.channelId)) {
-      return interaction.reply({ content: "⏳ There's already an active trivia question in this channel! Answer it first.", flags: MessageFlags.Ephemeral });
-    }
-
-    const q = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)];
-    const expiresAt = Date.now() + 30_000;
-
-    const embed = new EmbedBuilder()
-      .setTitle("🧠 Trivia Time!")
-      .setDescription(`**${q.q}**\n\nType your answer in chat within **30 seconds**!\n\n🎁 Reward: **50 coins + 25 XP** for the first correct answer!`)
-      .setColor(0x5865f2)
-      .setFooter({ text: "You have 30 seconds to answer!" })
-      .setTimestamp(expiresAt);
-
-    await interaction.reply({ embeds: [embed] });
-    const msg = await interaction.fetchReply();
-
-    activeTriviaGames.set(interaction.channelId, {
-      question: q.q,
-      answer:   q.a,
-      display:  q.display,
-      expiresAt,
-      messageId: msg.id,
-      askedBy:   interaction.user.id,
-    });
-
-    // Auto-expire after 30 seconds
-    setTimeout(async () => {
-      if (!activeTriviaGames.has(interaction.channelId)) return;
-      const game = activeTriviaGames.get(interaction.channelId);
-      if (game.messageId !== msg.id) return; // a new game replaced this one
-      activeTriviaGames.delete(interaction.channelId);
-      const timeoutEmbed = new EmbedBuilder()
-        .setTitle("⏰ Trivia — Time's Up!")
-        .setDescription(`Nobody got it in time!\n\n✅ **Answer:** ${game.display}`)
-        .setColor(0xed4245)
-        .setTimestamp();
-      interaction.channel.send({ embeds: [timeoutEmbed] }).catch(() => {});
-    }, 30_000);
-
-    return;
-  }
-
-  // ── /joke ─────────────────────────────────────────────────────────────────────
-  if (commandName === "joke") {
-    const joke = JOKES[Math.floor(Math.random() * JOKES.length)];
-    const embed = new EmbedBuilder()
-      .setTitle("😂 Random Joke")
-      .addFields(
-        { name: "Setup",     value: joke.setup,     inline: false },
-        { name: "Punchline", value: joke.punchline,  inline: false },
-      )
-      .setColor(0xfee75c)
-      .setFooter({ text: `Requested by ${interaction.user.username}` })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /roast ────────────────────────────────────────────────────────────────────
-  if (commandName === "roast") {
-    const target = interaction.options.getUser("user") ?? interaction.user;
-    const roast  = ROASTS[Math.floor(Math.random() * ROASTS.length)];
-    const isSelf = target.id === interaction.user.id;
-    const embed = new EmbedBuilder()
-      .setTitle(`🔥 Roast — ${target.username}`)
-      .setDescription(`${target} ${roast}`)
-      .setColor(0xed4245)
-      .setThumbnail(target.displayAvatarURL())
-      .setFooter({ text: isSelf ? "Roasting yourself? Respect. 😂" : `Roasted by ${interaction.user.username} • All in good fun!` })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /hug ──────────────────────────────────────────────────────────────────────
-  if (commandName === "hug") {
-    const target = interaction.options.getUser("user");
-    const isSelf = target.id === interaction.user.id;
-    const messages = isSelf
-      ? ["You hugged yourself. We all need that sometimes. 🤗"]
-      : [
-          `${interaction.user} wraps ${target} in a big warm hug! 🤗`,
-          `${interaction.user} gives ${target} the tightest hug ever! 🤗💕`,
-          `${target} just got a wholesome hug from ${interaction.user}! 🤗✨`,
-          `${interaction.user} sneaks up and hugs ${target} from behind! 🤗🎉`,
-          `${target} receives a super cozy hug from ${interaction.user}! 🤗🌟`,
-        ];
-    const text = messages[Math.floor(Math.random() * messages.length)];
-    const embed = new EmbedBuilder()
-      .setTitle("🤗 Hug!")
-      .setDescription(text)
-      .setColor(0xffa07a)
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /slap ─────────────────────────────────────────────────────────────────────
-  if (commandName === "slap") {
-    const target = interaction.options.getUser("user");
-    const isSelf = target.id === interaction.user.id;
-    const messages = isSelf
-      ? ["You slapped yourself. Bold move. 👋😂"]
-      : [
-          `${interaction.user} slaps ${target} with a large trout! 🐟👋`,
-          `${interaction.user} gives ${target} a playful slap! 👋😂`,
-          `*SLAP!* ${target} didn't see that coming from ${interaction.user}! 👋💥`,
-          `${interaction.user} winds up and delivers a legendary slap to ${target}! 👋🌟`,
-          `${target} just got slapped into next week by ${interaction.user}! 👋😂`,
-        ];
-    const text = messages[Math.floor(Math.random() * messages.length)];
-    const embed = new EmbedBuilder()
-      .setTitle("👋 Slap!")
-      .setDescription(text)
-      .setColor(0xff6b6b)
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
-  }
-
-  // ── /kiss ─────────────────────────────────────────────────────────────────────
-  if (commandName === "kiss") {
-    const target = interaction.options.getUser("user");
-    const isSelf = target.id === interaction.user.id;
-    const messages = isSelf
-      ? ["You kissed yourself in the mirror. We don't judge. 💋😂"]
-      : [
-          `${interaction.user} blows a kiss to ${target}! 💋✨`,
-          `${interaction.user} gives ${target} a sweet kiss on the cheek! 💋😊`,
-          `${target} just received a kiss from ${interaction.user}! 💋💕`,
-          `${interaction.user} sneaks a kiss on ${target}'s forehead! 💋🌸`,
-          `${target} is blushing after a kiss from ${interaction.user}! 💋😳`,
-        ];
-    const text = messages[Math.floor(Math.random() * messages.length)];
-    const embed = new EmbedBuilder()
-      .setTitle("💋 Kiss!")
-      .setDescription(text)
-      .setColor(0xff69b4)
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
   }
 
   } catch (err) {
