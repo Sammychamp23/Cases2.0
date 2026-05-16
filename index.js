@@ -183,6 +183,17 @@ const commands = [
     .addIntegerOption((o) => o.setName("amount").setDescription("Number of coins to remove").setRequired(true).setMinValue(1))
     .addUserOption((o) => o.setName("user").setDescription("Member to remove coins from (omit for yourself)").setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("buyall").setDescription("🛒 Buy all shop items you don't already own (shows cost & confirmation first)"),
+  new SlashCommandBuilder().setName("joke").setDescription("😂 Get a random joke"),
+  new SlashCommandBuilder().setName("8ball").setDescription("🎱 Ask the magic 8 ball a question")
+    .addStringOption((o) => o.setName("question").setDescription("Your question for the 8 ball").setRequired(true)),
+  new SlashCommandBuilder().setName("rps").setDescription("✂️ Play Rock Paper Scissors against the bot"),
+  new SlashCommandBuilder().setName("roast").setDescription("🔥 Roast a member (lighthearted only!)")
+    .addUserOption((o) => o.setName("user").setDescription("Member to roast").setRequired(true)),
+  new SlashCommandBuilder().setName("hug").setDescription("🤗 Send a hug to a member")
+    .addUserOption((o) => o.setName("user").setDescription("Member to hug").setRequired(true)),
+  new SlashCommandBuilder().setName("coinflip").setDescription("🪙 Flip a coin — heads or tails?"),
+  new SlashCommandBuilder().setName("trivia").setDescription("🧠 Answer a trivia question and win coins!"),
 ].map((cmd) => cmd.toJSON());
 
 // ── Command → required channel ─────────────────────────────────────────────────
@@ -191,8 +202,10 @@ const CMD_CHANNEL = {
   balance: "bot-commands", daily: "bot-commands", weekly: "bot-commands",
   rank: "bot-commands", leaderboard: "bot-commands", serverstats: "bot-commands",
   activity: "bot-commands", invites: "bot-commands", challenges: "bot-commands",
-  shop: "bot-commands", buy: "bot-commands", inventory: "bot-commands",
-  equip: "bot-commands", achievements: "bot-commands",
+  shop: "bot-commands", buy: "bot-commands", buyall: "bot-commands",
+  inventory: "bot-commands", equip: "bot-commands", achievements: "bot-commands",
+  joke: "bot-commands", "8ball": "bot-commands", rps: "bot-commands",
+  roast: "bot-commands", hug: "bot-commands", coinflip: "bot-commands", trivia: "bot-commands",
   warn: "admin-commands", mute: "admin-commands", kick: "admin-commands", ban: "admin-commands",
 };
 
@@ -257,6 +270,11 @@ const dailyRotation     = { date: "", items: [] }; // today's featured shop item
 
 // Popular-item tracking: how many times each item has been purchased
 const itemPopularity    = new Map(); // itemId -> purchase count
+
+// ── Fun command stores ─────────────────────────────────────────────────────────
+const funCooldowns      = new Map(); // `${userId}:${cmd}` -> timestamp
+const triviaActive      = new Map(); // userId -> { correct, expiresAt, reward }
+const buyallPending     = new Map(); // userId -> { items, total, expiresAt }
 
 const BOOST_DURATION_MS  = 30 * 60 * 1000; // 30 min server boost
 const DROP_ZONE_DURATION = () => (10 + Math.floor(Math.random() * 21)) * 60 * 1000; // 10–30 min
@@ -426,6 +444,128 @@ function getUserBoostMult(userId) {
   if (boosts.mega && now < boosts.mega)  { xpMult *= 3; coinMult *= 3; }
   return { xpMult, coinMult };
 }
+
+// ── Fun command content ────────────────────────────────────────────────────────
+
+const JOKES = [
+  "Why don't scientists trust atoms? Because they make up everything!",
+  "I told my wife she was drawing her eyebrows too high. She looked surprised.",
+  "Why can't you give Elsa a balloon? Because she'll let it go.",
+  "What do you call a factory that makes okay products? A satisfactory.",
+  "I used to hate facial hair, but then it grew on me.",
+  "Why did the scarecrow win an award? He was outstanding in his field.",
+  "I'm on a seafood diet. I see food and I eat it.",
+  "What do you call a sleeping dinosaur? A dino-snore.",
+  "Why do cows wear bells? Because their horns don't work.",
+  "I told a joke about construction. I'm still working on it.",
+  "What's brown and sticky? A stick.",
+  "Why don't eggs tell jokes? They'd crack each other up.",
+  "I asked the librarian for books about paranoia. She whispered: 'They're right behind you!'",
+  "Why did the math book look so sad? It had too many problems.",
+  "What do you call cheese that isn't yours? Nacho cheese.",
+  "Why did the bicycle fall over? It was two-tired.",
+  "I would tell a pizza joke but it's too cheesy.",
+  "What do you call a man with a rubber toe? Roberto.",
+  "Why did the golfer bring extra pants? In case he got a hole in one.",
+  "I told my doctor I broke my arm in two places. He told me to stop going to those places.",
+];
+
+const EIGHTBALL = [
+  "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes, definitely.",
+  "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
+  "Signs point to yes.", "Yes.", "Reply hazy, try again.", "Ask again later.",
+  "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
+  "Don't count on it.", "My reply is no.", "My sources say no.",
+  "Outlook not so good.", "Very doubtful.",
+];
+
+const ROASTS = [
+  "You're not stupid — you just have bad luck thinking.",
+  "I'd agree with you but then we'd both be wrong.",
+  "If laughter is the best medicine, your face must be curing diseases.",
+  "You bring everyone so much joy... when you leave the room.",
+  "I'd explain it to you, but I left my crayons at home.",
+  "You're like a cloud. When you disappear, it's a beautiful day.",
+  "Your secrets are safe with me. I never even listen when you tell me them.",
+  "I'd roast you harder but my mum said I'm not allowed to burn trash.",
+  "You're not the dumbest person alive, but you better hope they don't die.",
+  "If you were any more basic, you'd be pH 14.",
+  "I'd say you're funny but I don't want to give you any ideas.",
+  "Your WiFi password is probably 'password'.",
+  "You must have been born on a highway — that's where most accidents happen.",
+  "I'm not insulting you. I'm describing you.",
+  "You're the human equivalent of a participation trophy.",
+  "If laziness was a sport, you'd still come last — you wouldn't show up.",
+  "You're not even wrong, you're just confidently incorrect.",
+  "You have your whole life to be like this. Why not take today off?",
+  "I've met smarter ideas in a fortune cookie.",
+  "You're proof that even WiFi drops at the worst moments.",
+];
+
+const HUG_MSGS = [
+  "wraps you in the warmest, fluffiest hug imaginable 🤗",
+  "comes running from across the room just to squeeze you tight 💛",
+  "gives you a big bear hug and won't let go 🐻",
+  "sneaks up behind you and hugs you out of nowhere! 💖",
+  "tackle-hugs you so hard you almost fall over 😂💕",
+  "gives you the kind of hug that makes everything better ✨",
+  "hugs you so tight the world feels okay again 🌸",
+  "wraps you in a hug full of good vibes and great energy 💫",
+  "gives you a super mega ultra hug 🎁",
+  "holds on tight and whispers 'you're awesome' 🌟",
+];
+
+const TRIVIA_QUESTIONS = [
+  { q: "What is the capital of France?",              choices: ["Berlin", "Paris", "Madrid"],              answer: 1, reward: 50 },
+  { q: "How many sides does a hexagon have?",          choices: ["5", "6", "7"],                           answer: 1, reward: 50 },
+  { q: "What planet is closest to the Sun?",           choices: ["Venus", "Earth", "Mercury"],             answer: 2, reward: 75 },
+  { q: "What is 7 × 8?",                              choices: ["54", "56", "58"],                         answer: 1, reward: 50 },
+  { q: "What gas do plants absorb from the air?",      choices: ["Oxygen", "Nitrogen", "Carbon Dioxide"],  answer: 2, reward: 75 },
+  { q: "Who painted the Mona Lisa?",                   choices: ["Van Gogh", "Da Vinci", "Picasso"],        answer: 1, reward: 100 },
+  { q: "What is the largest ocean on Earth?",          choices: ["Atlantic", "Indian", "Pacific"],          answer: 2, reward: 75 },
+  { q: "How many continents are there?",               choices: ["6", "7", "8"],                           answer: 1, reward: 50 },
+  { q: "What is the approximate speed of light?",      choices: ["300,000 km/s", "150,000 km/s", "3,000 km/s"], answer: 0, reward: 100 },
+  { q: "Which element has the symbol 'Au'?",           choices: ["Silver", "Copper", "Gold"],              answer: 2, reward: 100 },
+  { q: "In what year did World War II end?",            choices: ["1943", "1944", "1945"],                  answer: 2, reward: 100 },
+  { q: "What is the tallest mountain in the world?",    choices: ["K2", "Mount Everest", "Kangchenjunga"],  answer: 1, reward: 75 },
+  { q: "How many strings does a standard guitar have?", choices: ["4", "5", "6"],                          answer: 2, reward: 50 },
+  { q: "What is the chemical formula for water?",       choices: ["H2O", "CO2", "NaCl"],                   answer: 0, reward: 50 },
+  { q: "Which country invented pizza?",                 choices: ["USA", "Italy", "Greece"],                answer: 1, reward: 75 },
+  { q: "What is the hardest natural substance?",        choices: ["Iron", "Diamond", "Titanium"],           answer: 1, reward: 100 },
+  { q: "How many bones are in the adult human body?",   choices: ["186", "196", "206"],                    answer: 2, reward: 100 },
+  { q: "Which planet has the most moons?",              choices: ["Jupiter", "Saturn", "Uranus"],           answer: 1, reward: 100 },
+  { q: "What is the smallest prime number?",            choices: ["1", "2", "3"],                          answer: 1, reward: 75 },
+  { q: "What language has the most native speakers?",   choices: ["English", "Spanish", "Mandarin"],       answer: 2, reward: 75 },
+];
+
+const FUN_COOLDOWN_MS = 30 * 1000; // 30s between fun commands
+
+function checkFunCooldown(userId, cmd) {
+  const key = `${userId}:${cmd}`;
+  const last = funCooldowns.get(key) ?? 0;
+  const remaining = FUN_COOLDOWN_MS - (Date.now() - last);
+  if (remaining > 0) return Math.ceil(remaining / 1000);
+  funCooldowns.set(key, Date.now());
+  return 0;
+}
+
+// ── Required roles — auto-created on startup ───────────────────────────────────
+
+const REQUIRED_ROLES = [
+  { name: "Member",             color: 0x5865f2 },
+  { name: "Active",             color: 0x57f287 },
+  { name: "Regular",            color: 0x5865f2 },
+  { name: "Veteran",            color: 0xab47bc },
+  { name: "Elite",              color: 0xff7043 },
+  { name: "Achievement Hunter", color: 0xfee75c },
+  { name: "Legendary Buyer",    color: 0xed4245 },
+  { name: "Trivia Master",      color: 0x00b0f4 },
+  { name: "Chatter",            color: 0x57f287 },
+  { name: "Regular+",           color: 0x5865f2 },
+  { name: "Veteran+",           color: 0xab47bc },
+  { name: "Server Legend",      color: 0xff7043 },
+  { name: "Elite+",             color: 0xffd700 },
+];
 
 // Daily shop rotation: pick 3 random non-legendary items at 20% discount each day
 function getDailyRotation() {
@@ -1251,6 +1391,19 @@ client.once("clientReady", async () => {
 
   // Reward drop zone — every 2 hours activate a random channel
   setInterval(activateRandomDropZone, 2 * 60 * 60 * 1000);
+
+  // Auto-create missing required roles in every guild
+  for (const guild of client.guilds.cache.values()) {
+    for (const roleDef of REQUIRED_ROLES) {
+      const exists = guild.roles.cache.find((r) => r.name === roleDef.name);
+      if (!exists) {
+        try {
+          await guild.roles.create({ name: roleDef.name, color: roleDef.color, reason: "Auto-created by Cases 2.0" });
+          console.log(`[AutoRole] Created: ${roleDef.name} in ${guild.name}`);
+        } catch (e) { console.error(`[AutoRole] Failed ${roleDef.name}:`, e.message); }
+      }
+    }
+  }
 
   console.log("All systems online.");
 });
@@ -3736,6 +3889,279 @@ client.on("interactionCreate", async (interaction) => {
                  : "The bot will silently track updates but **won't post announcements** until re-enabled."),
       flags: MessageFlags.Ephemeral,
     });
+  }
+
+  // ── /buyall ───────────────────────────────────────────────────────────────────
+  if (commandName === "buyall") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const userId = interaction.user.id;
+    const inv    = getUserInventory(userId);
+    const bal    = getCoins(userId);
+    const dailyIds = getDailyRotation();
+
+    const toBuy = SHOP_CATALOG.filter((item) => {
+      if (inv.has(item.id) && item.type === "role") return false;
+      if (getStock(item.id) <= 0) return false;
+      return true;
+    });
+
+    if (toBuy.length === 0) {
+      return interaction.editReply({ content: "✅ You already own everything in the shop!" });
+    }
+
+    let total = 0;
+    const lines = [];
+    for (const item of toBuy) {
+      const isDaily = dailyIds.includes(item.id);
+      const price   = isDaily ? Math.round(getItemPrice(item) * 0.8) : getItemPrice(item);
+      total += price;
+      lines.push(`${RARITY_EMOJI[item.rarity]} **${item.name}** — ${price.toLocaleString()} coins${isDaily ? " ⭐" : ""}`);
+    }
+
+    const canAfford = bal >= total;
+    const embed = new EmbedBuilder()
+      .setTitle("🛒 Buy All — Confirmation")
+      .setDescription(
+        `**${toBuy.length} items** ready to purchase:\n\n` +
+        lines.join("\n") +
+        `\n\n💰 **Total cost:** ${total.toLocaleString()} coins\n` +
+        `💳 **Your balance:** ${bal.toLocaleString()} coins\n` +
+        (canAfford
+          ? `✅ You can afford this! Click **Confirm** to buy everything.`
+          : `❌ You need **${(total - bal).toLocaleString()} more coins** to buy everything.`)
+      )
+      .setColor(canAfford ? 0x57f287 : 0xed4245)
+      .setTimestamp();
+
+    if (!canAfford) return interaction.editReply({ embeds: [embed] });
+
+    buyallPending.set(userId, { items: toBuy, total, expiresAt: Date.now() + 60_000 });
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("buyall_confirm").setLabel("✅ Confirm Purchase").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("buyall_cancel").setLabel("❌ Cancel").setStyle(ButtonStyle.Danger),
+    );
+    return interaction.editReply({ embeds: [embed], components: [row] });
+  }
+
+  // ── Button: buyall_confirm / buyall_cancel ────────────────────────────────────
+  if (interaction.isButton() && (interaction.customId === "buyall_confirm" || interaction.customId === "buyall_cancel")) {
+    const userId  = interaction.user.id;
+    const pending = buyallPending.get(userId);
+    if (!pending || Date.now() > pending.expiresAt) {
+      return interaction.update({ content: "⏰ This purchase expired. Run `/buyall` again.", embeds: [], components: [] });
+    }
+    buyallPending.delete(userId);
+
+    if (interaction.customId === "buyall_cancel") {
+      return interaction.update({ content: "❌ Purchase cancelled.", embeds: [], components: [] });
+    }
+
+    const bal = getCoins(userId);
+    if (bal < pending.total) {
+      return interaction.update({ content: `❌ You no longer have enough coins (need ${pending.total.toLocaleString()}, have ${bal.toLocaleString()}).`, embeds: [], components: [] });
+    }
+
+    coins.set(userId, bal - pending.total);
+    const purchased = [];
+    const dailyIds = getDailyRotation();
+    for (const item of pending.items) {
+      if (getStock(item.id) <= 0) continue;
+      shopStock.set(item.id, getStock(item.id) - 1);
+      itemPopularity.set(item.id, (itemPopularity.get(item.id) ?? 0) + 1);
+      const inv = getUserInventory(userId);
+      const entry = inv.get(item.id) ?? { quantity: 0, acquiredAt: Date.now() };
+      entry.quantity++;
+      inv.set(item.id, entry);
+      if (item.type === "boost" && item.boostType !== "lucky") {
+        const boosts = getUserBoosts(userId);
+        const expiresAt = Date.now() + item.boostMs;
+        if (item.boostType === "xp")   boosts.xp   = Math.max(boosts.xp   ?? 0, expiresAt);
+        if (item.boostType === "coin") boosts.coin  = Math.max(boosts.coin ?? 0, expiresAt);
+        if (item.boostType === "mega") boosts.mega  = Math.max(boosts.mega ?? 0, expiresAt);
+        userBoosts.set(userId, boosts);
+      }
+      if (item.rarity === "Legendary") {
+        const legRole = interaction.guild?.roles.cache.find((r) => r.name === "Legendary Buyer");
+        if (legRole && interaction.member) interaction.member.roles.add(legRole).catch(() => {});
+      }
+      purchased.push(`${RARITY_EMOJI[item.rarity]} **${item.name}**`);
+    }
+
+    const successEmbed = new EmbedBuilder()
+      .setTitle("✅ Purchase Complete!")
+      .setDescription(
+        `You bought **${purchased.length} items** for **${pending.total.toLocaleString()} coins**!\n\n` +
+        purchased.join("\n") +
+        `\n\n💰 Remaining balance: **${getCoins(userId).toLocaleString()} coins**\n` +
+        `Use \`/equip <id>\` to equip any role items.`
+      )
+      .setColor(0x57f287)
+      .setTimestamp();
+    return interaction.update({ embeds: [successEmbed], components: [] });
+  }
+
+  // ── /joke ─────────────────────────────────────────────────────────────────────
+  if (commandName === "joke") {
+    const cd = checkFunCooldown(interaction.user.id, "joke");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const joke = JOKES[Math.floor(Math.random() * JOKES.length)];
+    return interaction.reply({ embeds: [new EmbedBuilder().setTitle("😂 Random Joke").setDescription(joke).setColor(0xfee75c).setFooter({ text: `Requested by ${interaction.user.username}` }).setTimestamp()] });
+  }
+
+  // ── /8ball ────────────────────────────────────────────────────────────────────
+  if (commandName === "8ball") {
+    const cd = checkFunCooldown(interaction.user.id, "8ball");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const question = interaction.options.getString("question");
+    const response = EIGHTBALL[Math.floor(Math.random() * EIGHTBALL.length)];
+    const positive = ["certain","decidedly","doubt","definitely","rely","yes","likely","good","signs","yes."].some(w => response.toLowerCase().includes(w));
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("🎱 Magic 8 Ball")
+        .addFields(
+          { name: "❓ Question", value: question },
+          { name: "🎱 Answer",   value: `**${response}**` }
+        )
+        .setColor(positive ? 0x57f287 : 0xed4245)
+        .setFooter({ text: `Asked by ${interaction.user.username}` })
+        .setTimestamp()
+    ]});
+  }
+
+  // ── /rps ──────────────────────────────────────────────────────────────────────
+  if (commandName === "rps") {
+    const cd = checkFunCooldown(interaction.user.id, "rps");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("rps_rock").setLabel("🪨 Rock").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("rps_paper").setLabel("📄 Paper").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("rps_scissors").setLabel("✂️ Scissors").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.reply({ embeds: [
+      new EmbedBuilder().setTitle("✂️ Rock Paper Scissors").setDescription("Choose your move!").setColor(0x5865f2).setFooter({ text: "vs Cases 2.0" })
+    ], components: [row] });
+  }
+
+  // ── Button: rps_rock / rps_paper / rps_scissors ───────────────────────────────
+  if (interaction.isButton() && ["rps_rock","rps_paper","rps_scissors"].includes(interaction.customId)) {
+    const moves   = ["rock","paper","scissors"];
+    const emojis  = { rock: "🪨", paper: "📄", scissors: "✂️" };
+    const player  = interaction.customId.replace("rps_","");
+    const bot     = moves[Math.floor(Math.random() * 3)];
+    let result, color;
+    if (player === bot) { result = "🤝 It's a tie!"; color = 0xfee75c; }
+    else if ((player==="rock"&&bot==="scissors")||(player==="paper"&&bot==="rock")||(player==="scissors"&&bot==="paper")) { result = "🎉 You win!"; color = 0x57f287; }
+    else { result = "😂 Bot wins!"; color = 0xed4245; }
+    return interaction.update({ embeds: [
+      new EmbedBuilder()
+        .setTitle("✂️ Rock Paper Scissors — Result")
+        .addFields(
+          { name: `${interaction.user.username}`, value: `${emojis[player]} **${player.charAt(0).toUpperCase()+player.slice(1)}**`, inline: true },
+          { name: "Cases 2.0",                    value: `${emojis[bot]} **${bot.charAt(0).toUpperCase()+bot.slice(1)}**`, inline: true },
+        )
+        .setDescription(`\n**${result}**`)
+        .setColor(color)
+        .setTimestamp()
+    ], components: [] });
+  }
+
+  // ── /roast ────────────────────────────────────────────────────────────────────
+  if (commandName === "roast") {
+    const cd = checkFunCooldown(interaction.user.id, "roast");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const target = interaction.options.getUser("user");
+    if (target.id === client.user.id) return interaction.reply({ content: "Nice try 😂 You can't roast me!", flags: MessageFlags.Ephemeral });
+    const roast = ROASTS[Math.floor(Math.random() * ROASTS.length)];
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("🔥 Roasted!")
+        .setDescription(`${target} — ${roast}`)
+        .setColor(0xed4245)
+        .setFooter({ text: `Roasted by ${interaction.user.username} • All in good fun 😂` })
+        .setThumbnail(target.displayAvatarURL())
+        .setTimestamp()
+    ]});
+  }
+
+  // ── /hug ──────────────────────────────────────────────────────────────────────
+  if (commandName === "hug") {
+    const cd = checkFunCooldown(interaction.user.id, "hug");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const target = interaction.options.getUser("user");
+    const msg    = HUG_MSGS[Math.floor(Math.random() * HUG_MSGS.length)];
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("🤗 Hug!")
+        .setDescription(`**${interaction.user.username}** ${msg} **${target.username}** 💛`)
+        .setColor(0xfee75c)
+        .setThumbnail(target.displayAvatarURL())
+        .setTimestamp()
+    ]});
+  }
+
+  // ── /coinflip ─────────────────────────────────────────────────────────────────
+  if (commandName === "coinflip") {
+    const cd = checkFunCooldown(interaction.user.id, "coinflip");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const result = Math.random() < 0.5 ? "Heads" : "Tails";
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("🪙 Coin Flip!")
+        .setDescription(`The coin spins through the air...\n\n# ${result === "Heads" ? "🪙 HEADS" : "🔵 TAILS"}`)
+        .setColor(result === "Heads" ? 0xfee75c : 0x5865f2)
+        .setFooter({ text: `Flipped by ${interaction.user.username}` })
+        .setTimestamp()
+    ]});
+  }
+
+  // ── /trivia ───────────────────────────────────────────────────────────────────
+  if (commandName === "trivia") {
+    const cd = checkFunCooldown(interaction.user.id, "trivia");
+    if (cd) return interaction.reply({ content: `⏳ Cooldown! Try again in **${cd}s**.`, flags: MessageFlags.Ephemeral });
+    const userId = interaction.user.id;
+    const q = TRIVIA_QUESTIONS[Math.floor(Math.random() * TRIVIA_QUESTIONS.length)];
+    triviaActive.set(userId, { correct: q.answer, reward: q.reward, expiresAt: Date.now() + 30_000 });
+    const letters = ["🇦", "🇧", "🇨"];
+    const row = new ActionRowBuilder().addComponents(
+      q.choices.map((c, i) =>
+        new ButtonBuilder().setCustomId(`trivia_${i}`).setLabel(`${["A","B","C"][i]}: ${c}`).setStyle(ButtonStyle.Primary)
+      )
+    );
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("🧠 Trivia Time!")
+        .setDescription(`**${q.question}**\n\n${q.choices.map((c,i) => `${letters[i]} ${c}`).join("\n")}\n\n⏰ You have **30 seconds** to answer!\n🏆 Reward: **${q.reward} coins** if correct`)
+        .setColor(0x5865f2)
+        .setFooter({ text: `Requested by ${interaction.user.username}` })
+        .setTimestamp()
+    ], components: [row] });
+  }
+
+  // ── Button: trivia_0 / trivia_1 / trivia_2 ────────────────────────────────────
+  if (interaction.isButton() && /^trivia_[012]$/.test(interaction.customId)) {
+    const userId  = interaction.user.id;
+    const state   = triviaActive.get(userId);
+    if (!state) return interaction.update({ content: "❓ No active trivia for you. Run `/trivia`!", embeds: [], components: [] });
+    triviaActive.delete(userId);
+    if (Date.now() > state.expiresAt) return interaction.update({ content: "⏰ Time's up! The question expired.", embeds: [], components: [] });
+    const chosen = parseInt(interaction.customId.replace("trivia_",""), 10);
+    if (chosen === state.correct) {
+      addCoins(userId, state.reward, null);
+      const triviaWins = (triviaActive.get(`${userId}_wins`) ?? 0) + 1;
+      triviaActive.set(`${userId}_wins`, triviaWins);
+      if (triviaWins >= 10) {
+        const masterRole = interaction.guild?.roles.cache.find((r) => r.name === "Trivia Master");
+        if (masterRole && interaction.member) interaction.member.roles.add(masterRole).catch(() => {});
+      }
+      return interaction.update({ embeds: [
+        new EmbedBuilder().setTitle("✅ Correct!").setDescription(`Nice one! You earned **${state.reward} coins**!\n💰 Balance: **${getCoins(userId).toLocaleString()} coins**`).setColor(0x57f287).setTimestamp()
+      ], components: [] });
+    } else {
+      return interaction.update({ embeds: [
+        new EmbedBuilder().setTitle("❌ Wrong!").setDescription(`Not quite! Better luck next time. Use \`/trivia\` to try again!`).setColor(0xed4245).setTimestamp()
+      ], components: [] });
+    }
   }
 
   } catch (err) {
