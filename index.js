@@ -183,6 +183,31 @@ const commands = [
     .addIntegerOption((o) => o.setName("amount").setDescription("Number of coins to remove").setRequired(true).setMinValue(1))
     .addUserOption((o) => o.setName("user").setDescription("Member to remove coins from (omit for yourself)").setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("setcoins").setDescription("💰 [Head Admin] Set a user's exact coin balance")
+    .addIntegerOption((o) => o.setName("amount").setDescription("New coin balance").setRequired(true).setMinValue(0))
+    .addUserOption((o) => o.setName("user").setDescription("Target user (omit for yourself)"))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("givexp").setDescription("⭐ [Head Admin] Give XP to a user")
+    .addIntegerOption((o) => o.setName("amount").setDescription("XP to give").setRequired(true).setMinValue(1))
+    .addUserOption((o) => o.setName("user").setDescription("Target user (omit for yourself)"))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("removexp").setDescription("⭐ [Head Admin] Remove XP from a user")
+    .addIntegerOption((o) => o.setName("amount").setDescription("XP to remove").setRequired(true).setMinValue(1))
+    .addUserOption((o) => o.setName("user").setDescription("Target user (omit for yourself)"))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("setxp").setDescription("⭐ [Head Admin] Set a user's exact XP")
+    .addIntegerOption((o) => o.setName("amount").setDescription("New XP value").setRequired(true).setMinValue(0))
+    .addUserOption((o) => o.setName("user").setDescription("Target user (omit for yourself)"))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("resetxp").setDescription("⭐ [Head Admin] Reset a user's XP and level to zero")
+    .addUserOption((o) => o.setName("user").setDescription("Target user (omit for yourself)"))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName("pay").setDescription("💸 Transfer coins from your balance to another member")
+    .addUserOption((o) => o.setName("user").setDescription("Member to pay").setRequired(true))
+    .addIntegerOption((o) => o.setName("amount").setDescription("Amount of coins to send").setRequired(true).setMinValue(1)),
+  new SlashCommandBuilder().setName("streak").setDescription("🔥 View your current daily login streak and next reward"),
+  new SlashCommandBuilder().setName("achievementprogress").setDescription("📊 See detailed progress toward every achievement"),
+  new SlashCommandBuilder().setName("achievementleaderboard").setDescription("🏆 See who has the most achievements in this server"),
   new SlashCommandBuilder().setName("buyall").setDescription("🛒 Buy all shop items you don't already own (shows cost & confirmation first)"),
   new SlashCommandBuilder().setName("joke").setDescription("😂 Get a random joke"),
   new SlashCommandBuilder().setName("8ball").setDescription("🎱 Ask the magic 8 ball a question")
@@ -206,6 +231,10 @@ const CMD_CHANNEL = {
   inventory: "bot-commands", equip: "bot-commands", achievements: "bot-commands",
   joke: "bot-commands", "8ball": "bot-commands", rps: "bot-commands",
   roast: "bot-commands", hug: "bot-commands", coinflip: "bot-commands", trivia: "bot-commands",
+  pay: "bot-commands", streak: "bot-commands",
+  achievementprogress: "bot-commands", achievementleaderboard: "bot-commands",
+  setcoins: "admin-commands", givexp: "admin-commands", removexp: "admin-commands",
+  setxp: "admin-commands", resetxp: "admin-commands",
   warn: "admin-commands", mute: "admin-commands", kick: "admin-commands", ban: "admin-commands",
 };
 
@@ -327,6 +356,23 @@ function addCoins(userId, amount, channelId) {
   const newTotal = getCoins(userId) + final;
   coins.set(userId, newTotal);
   return final;
+}
+
+// ── Economy action logger ──────────────────────────────────────────────────────
+async function logEconomyAction(guild, executor, targetUser, action, amount) {
+  const ch = findChannel(guild, "economy-log") ?? findChannel(guild, "admin-log");
+  if (!ch) return;
+  const embed = new EmbedBuilder()
+    .setTitle("📋 Economy Action Log")
+    .addFields(
+      { name: "Executor", value: `${executor.user?.tag ?? executor.tag} (${executor.id})`, inline: true },
+      { name: "Target",   value: `${targetUser.tag ?? targetUser.username} (${targetUser.id})`, inline: true },
+      { name: "Action",   value: action, inline: true },
+      { name: "Amount",   value: String(amount),                                             inline: true },
+    )
+    .setColor(0xfee75c)
+    .setTimestamp();
+  ch.send({ embeds: [embed] }).catch(() => {});
 }
 
 async function handleLevelUp(member, newLevel) {
@@ -2129,7 +2175,11 @@ client.on("interactionCreate", async (interaction) => {
       r.name.toLowerCase().replace(/[\s_-]+/g, "") === "headadmin"
     );
   }
-  const HEAD_ADMIN_COMMANDS = ["setup-server", "test-update", "organize_server", "give-coins", "remove-coins"];
+  const HEAD_ADMIN_COMMANDS = [
+    "setup-server", "test-update", "organize_server",
+    "give-coins", "remove-coins", "setcoins",
+    "givexp", "removexp", "setxp", "resetxp",
+  ];
   if (commandName && HEAD_ADMIN_COMMANDS.includes(commandName) && !isHeadAdmin(interaction.member)) {
     return interaction.reply({
       content: "🚫 This command is restricted to **Head Admins** only.",
@@ -3889,6 +3939,189 @@ client.on("interactionCreate", async (interaction) => {
                  : "The bot will silently track updates but **won't post announcements** until re-enabled."),
       flags: MessageFlags.Ephemeral,
     });
+  }
+
+  // ── /setcoins ─────────────────────────────────────────────────────────────────
+  if (commandName === "setcoins") {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    const amount = interaction.options.getInteger("amount");
+    coins.set(target.id, amount);
+    await logEconomyAction(interaction.guild, interaction.member, target, "Set Coins", amount);
+    return interaction.reply({
+      content: `✅ Set **${target.username}**'s coin balance to **${amount.toLocaleString()} coins**.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // ── /givexp ───────────────────────────────────────────────────────────────────
+  if (commandName === "givexp") {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    const amount = interaction.options.getInteger("amount");
+    const member = interaction.guild?.members.cache.get(target.id) ?? await interaction.guild?.members.fetch(target.id).catch(() => null);
+    if (!member) return interaction.reply({ content: "❌ Member not found in this server.", flags: MessageFlags.Ephemeral });
+    const data   = getXP(target.id);
+    data.xp     += amount;
+    const newLvl = getLevel(data.xp);
+    const leveled = newLvl > data.level;
+    data.level   = newLvl;
+    xpStore.set(target.id, data);
+    if (leveled) await handleLevelUp(member, newLvl);
+    await logEconomyAction(interaction.guild, interaction.member, target, "Give XP", `+${amount}`);
+    return interaction.reply({
+      content: `✅ Gave **${amount.toLocaleString()} XP** to **${target.username}**. They are now level **${newLvl}** (${data.xp.toLocaleString()} XP total).`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // ── /removexp ─────────────────────────────────────────────────────────────────
+  if (commandName === "removexp") {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    const amount = interaction.options.getInteger("amount");
+    const data   = getXP(target.id);
+    data.xp      = Math.max(0, data.xp - amount);
+    data.level   = getLevel(data.xp);
+    xpStore.set(target.id, data);
+    await logEconomyAction(interaction.guild, interaction.member, target, "Remove XP", `-${amount}`);
+    return interaction.reply({
+      content: `✅ Removed **${amount.toLocaleString()} XP** from **${target.username}**. They are now level **${data.level}** (${data.xp.toLocaleString()} XP remaining).`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // ── /setxp ────────────────────────────────────────────────────────────────────
+  if (commandName === "setxp") {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    const amount = interaction.options.getInteger("amount");
+    const member = interaction.guild?.members.cache.get(target.id) ?? await interaction.guild?.members.fetch(target.id).catch(() => null);
+    const newLvl = getLevel(amount);
+    const old    = getXP(target.id);
+    xpStore.set(target.id, { xp: amount, level: newLvl });
+    if (member && newLvl > old.level) await handleLevelUp(member, newLvl);
+    await logEconomyAction(interaction.guild, interaction.member, target, "Set XP", amount);
+    return interaction.reply({
+      content: `✅ Set **${target.username}**'s XP to **${amount.toLocaleString()}** (level **${newLvl}**).`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // ── /resetxp ──────────────────────────────────────────────────────────────────
+  if (commandName === "resetxp") {
+    const target = interaction.options.getUser("user") ?? interaction.user;
+    xpStore.set(target.id, { xp: 0, level: 0 });
+    await logEconomyAction(interaction.guild, interaction.member, target, "Reset XP", 0);
+    return interaction.reply({
+      content: `✅ Reset **${target.username}**'s XP and level back to **0**.`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // ── /pay ──────────────────────────────────────────────────────────────────────
+  if (commandName === "pay") {
+    const target = interaction.options.getUser("user");
+    const amount = interaction.options.getInteger("amount");
+    const userId = interaction.user.id;
+    if (target.id === userId) return interaction.reply({ content: "❌ You can't pay yourself.", flags: MessageFlags.Ephemeral });
+    if (target.bot)           return interaction.reply({ content: "❌ You can't pay a bot.",    flags: MessageFlags.Ephemeral });
+    const bal = getCoins(userId);
+    if (bal < amount) {
+      return interaction.reply({
+        content: `❌ You only have **${bal.toLocaleString()} coins** and tried to send **${amount.toLocaleString()}**.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    coins.set(userId, bal - amount);
+    addCoins(target.id, amount, null);
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("💸 Coins Sent!")
+        .setDescription(`**${interaction.user.username}** sent **${amount.toLocaleString()} coins** to ${target}!`)
+        .addFields(
+          { name: `${interaction.user.username}'s new balance`, value: `${getCoins(userId).toLocaleString()} coins`, inline: true },
+          { name: `${target.username}'s new balance`,           value: `${getCoins(target.id).toLocaleString()} coins`, inline: true },
+        )
+        .setColor(0x57f287)
+        .setTimestamp()
+    ]});
+  }
+
+  // ── /streak ───────────────────────────────────────────────────────────────────
+  if (commandName === "streak") {
+    const userId = interaction.user.id;
+    const s      = loginStreak.get(userId) ?? { lastDate: "", streak: 0 };
+    const nextStreakAch = [3, 7, 30].find((goal) => s.streak < goal) ?? null;
+    const embed = new EmbedBuilder()
+      .setTitle("🔥 Your Daily Streak")
+      .setDescription(
+        `**Current streak:** ${s.streak} day${s.streak !== 1 ? "s" : ""} 🔥\n` +
+        `**Last login:** ${s.lastDate || "Never"}\n\n` +
+        (nextStreakAch
+          ? `📈 **${nextStreakAch - s.streak} more day(s)** until your next streak achievement (${nextStreakAch}-day milestone)!`
+          : "🏆 You've reached the highest streak milestone! Keep it up!")
+      )
+      .setColor(0xff7043)
+      .setThumbnail(interaction.user.displayAvatarURL())
+      .setFooter({ text: "Use /daily every day to keep your streak alive!" })
+      .setTimestamp();
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // ── /achievementprogress ──────────────────────────────────────────────────────
+  if (commandName === "achievementprogress") {
+    const userId = interaction.user.id;
+    const data   = getAchievements(userId);
+    const streak = loginStreak.get(userId)?.streak ?? 0;
+    const liveProgress = {
+      msgs:       activityData.get(userId)?.msgs ?? 0,
+      voiceMins:  Math.floor((activityData.get(userId)?.voiceMs ?? 0) / 60000),
+      streak,
+      invites:    inviteMap.get(userId) ?? 0,
+      totalCoins: getCoins(userId),
+    };
+    const lines = ACHIEVEMENTS.map((ach) => {
+      const entry    = data[ach.id] ?? { progress: 0, earned: false };
+      const progress = entry.earned ? ach.goal : Math.min(liveProgress[ach.field] ?? entry.progress, ach.goal);
+      const pct      = Math.round((progress / ach.goal) * 100);
+      const bar      = "█".repeat(Math.floor(pct / 10)) + "░".repeat(10 - Math.floor(pct / 10));
+      const status   = entry.earned ? "✅" : "🔲";
+      return `${status} ${ach.emoji} **${ach.name}** — ${progress}/${ach.goal}\n\`[${bar}]\` ${pct}%`;
+    });
+    const embed = new EmbedBuilder()
+      .setTitle(`📊 ${interaction.user.username}'s Achievement Progress`)
+      .setDescription(lines.join("\n\n"))
+      .setColor(0x5865f2)
+      .setThumbnail(interaction.user.displayAvatarURL())
+      .setTimestamp();
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // ── /achievementleaderboard ───────────────────────────────────────────────────
+  if (commandName === "achievementleaderboard") {
+    const scores = [...achievementData.entries()]
+      .map(([uid, data]) => ({ uid, count: Object.values(data).filter((e) => e.earned).length }))
+      .filter((e) => e.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    if (scores.length === 0) {
+      return interaction.reply({ content: "😢 Nobody has earned any achievements yet! Be the first!", flags: MessageFlags.Ephemeral });
+    }
+
+    const medals = ["🥇","🥈","🥉"];
+    const lines  = await Promise.all(scores.map(async (entry, i) => {
+      const user = await client.users.fetch(entry.uid).catch(() => null);
+      const name = user?.username ?? `User ${entry.uid}`;
+      const icon = medals[i] ?? `**${i+1}.**`;
+      return `${icon} **${name}** — ${entry.count}/${ACHIEVEMENTS.length} achievements`;
+    }));
+
+    return interaction.reply({ embeds: [
+      new EmbedBuilder()
+        .setTitle("🏆 Achievement Leaderboard")
+        .setDescription(lines.join("\n"))
+        .setColor(0xfee75c)
+        .setFooter({ text: "Use /achievementprogress to see your own detailed progress" })
+        .setTimestamp()
+    ]});
   }
 
   // ── /buyall ───────────────────────────────────────────────────────────────────
