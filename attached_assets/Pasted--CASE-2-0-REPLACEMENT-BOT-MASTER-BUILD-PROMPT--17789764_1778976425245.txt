@@ -1,0 +1,143 @@
+==================================================
+CASE 2.0 REPLACEMENT BOT — MASTER BUILD PROMPT
+==================================================
+
+IMPORTANT CONTEXT:
+This bot is a FULL REPLACEMENT for the original “Cases Beta” Discord bot that was permanently lost due to the bot account being banned.
+
+This is NOT a fresh bot build.
+
+It MUST:
+- Continue existing server systems
+- NOT delete or reset anything
+- NOT recreate duplicates of existing systems
+- NOT wipe channels, roles, or configurations
+- Safely integrate into the current server structure
+- Detect existing systems before creating anything new
+
+==================================================
+SAFE SERVER ROLLBACK / RESTORE SYSTEM
+==================================================
+
+IMPORTANT:
+This is NOT a destructive “nuke” or wipe command.
+
+The system should ONLY:
+- Remove channels/categories/roles/messages created by THIS replacement bot
+- Restore previously saved server layouts/configurations
+- NEVER damage manually-created server structures
+- NEVER delete unrelated channels or roles
+
+==================================================
+BACKUP SYSTEM
+==================================================
+
+Before the bot creates/modifies anything:
+- Channels
+- Categories
+- Roles
+- Configurations
+- Permission systems
+
+It must automatically create backups/snapshots.
+
+Backups must include:
+- Channel names
+- Category structure
+- Permissions
+- Role mappings
+- Bot-created assets
+- Configuration settings
+
+Backups must be:
+- Timestamped
+- Versioned
+- Stored in database or JSON system
+
+==================================================
+RESTORE COMMANDS (HEAD ADMIN ONLY)
+==================================================
+
+- /backupserver → create full snapshot
+- /restorebackup <id> → restore selected backup
+- /rollbackbotchanges → revert only bot-created changes
+
+==================================================
+RESTORE BEHAVIOR RULES
+==================================================
+
+When restoring:
+- ONLY modify bot-created assets
+- NEVER touch manual server structure
+- NEVER delete unrelated channels/roles
+- NEVER reset server completely
+- NEVER affect ownership/admin permissions
+
+System must:
+- Compare current state vs backup
+- Restore missing bot-created items
+- Remove only outdated bot-created items
+- Update changed bot configurations
+
+==================================================
+CONFIRMATION SYSTEM
+==================================================
+
+Before restore:
+- Show full preview of changes
+- Require Head Admin confirmation
+- Require multiple confirmation steps
+- Optional confirmation code/reaction approval
+
+==================================================
+BOT ASSET TRACKING
+==================================================
+
+The bot must track everything it creates:
+- Channels
+- Categories
+- Roles
+- Embeds/messages
+- Config systems
+
+Each asset must be stored with:
+- Unique ID
+- Creation timestamp
+- Creator (bot)
+- Purpose tag
+
+This ensures safe rollback.
+
+==================================================
+FAILSAFE PROTECTION
+==================================================
+
+If backup data is missing/corrupted:
+- Abort operation immediately
+- Do NOT partially delete anything
+- Log error to admin logs channel
+
+==================================================
+LOGGING SYSTEM
+==================================================
+
+Log ALL restore actions:
+- Who initiated it
+- Backup version used
+- Items changed
+- Timestamp
+- Success/failure status
+
+==================================================
+CRITICAL SAFETY RULES
+==================================================
+
+This system MUST:
+- Preserve server integrity
+- Only manage bot-created systems
+- Prevent accidental mass deletion
+- Never behave like a server wipe tool
+
+==================================================
+END OF SYSTEM
+==================================================

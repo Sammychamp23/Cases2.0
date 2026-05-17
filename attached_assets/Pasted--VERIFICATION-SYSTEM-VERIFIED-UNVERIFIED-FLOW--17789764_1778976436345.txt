@@ -1,0 +1,104 @@
+==================================================
+VERIFICATION SYSTEM (VERIFIED / UNVERIFIED FLOW)
+==================================================
+
+Add a full server verification system that controls access to server features and automatically manages roles.
+
+==================================================
+CORE VERIFICATION LOGIC
+==================================================
+
+The server uses two main roles:
+
+- Verified
+- Unverified
+
+RULE:
+- Users start with "Unverified"
+- When a user becomes "Verified", the system unlocks full access
+
+==================================================
+AUTO ROLE SWITCHING (IMPORTANT)
+==================================================
+
+When ANY user is given the "Verified" role:
+- The bot MUST automatically REMOVE the "Unverified" role instantly
+
+This applies even if:
+- The role is given manually by Head Admin
+- The role is given by another bot
+- The role is given via command
+- The role is given via role menu/buttons
+
+The system must listen to role update events in real time.
+
+==================================================
+CHANNEL ACCESS CONTROL (“VERIFICATION BIT”)
+==================================================
+
+Certain channels should be locked behind verification.
+
+The bot must:
+- Detect verification-required channels
+- Restrict access to Unverified users
+- Allow Verified users full access
+
+Example logic:
+- If user has Verified → allow all access
+- If user has Unverified → restrict to limited channels only
+
+==================================================
+AUTO WELCOME / SETUP FLOW
+==================================================
+
+When a new user joins:
+- Automatically assign "Unverified" role
+- Send welcome embed explaining verification steps
+- Direct them to verification process channel
+
+==================================================
+VERIFICATION SYSTEM INTEGRATION
+==================================================
+
+Verification should integrate with:
+- Shop system
+- XP system
+- Economy system
+- Achievement system
+
+Rules:
+- Unverified users may have limited or no access to rewards
+- Verified users unlock full gameplay systems
+
+==================================================
+SAFETY RULES
+==================================================
+
+- NEVER remove Verified role automatically
+- ONLY remove Unverified when Verified is detected
+- Do NOT affect any other roles
+- Do NOT create duplicate roles
+- Do NOT spam role changes
+- Must include loop protection to prevent infinite role switching
+
+==================================================
+LOGGING SYSTEM
+==================================================
+
+Log all verification actions:
+- User verified
+- Role changes
+- Source of verification (manual, admin, system)
+- Timestamp
+
+==================================================
+IMPORTANT
+==================================================
+
+This verification system is a CORE SERVER GATE.
+
+It must be:
+- Fast
+- Automatic
+- Non-buggy
+- Integrated with all other systems safely
