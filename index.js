@@ -221,13 +221,6 @@ const commands = [
     .addUserOption((o) => o.setName("user").setDescription("Member to hug").setRequired(true)),
   new SlashCommandBuilder().setName("coinflip").setDescription("🪙 Flip a coin — heads or tails?"),
   new SlashCommandBuilder().setName("trivia").setDescription("🧠 Answer a trivia question and win coins!"),
-  new SlashCommandBuilder().setName("backupserver").setDescription("📸 [Head Admin] Create a full snapshot backup of this server's structure")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName("restorebackup").setDescription("♻️ [Head Admin] Restore a previously saved server backup")
-    .addStringOption(o => o.setName("id").setDescription("Backup ID to restore (e.g. BKP_ABC123)").setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName("rollbackbotchanges").setDescription("↩️ [Head Admin] Preview & delete bot-created channels/roles not in the latest backup")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map((cmd) => cmd.toJSON());
 
 // ── Command → required channel ─────────────────────────────────────────────────
@@ -314,8 +307,6 @@ const funCooldowns      = new Map(); // `${userId}:${cmd}` -> timestamp
 const triviaActive      = new Map(); // userId -> { correct, expiresAt, reward }
 const buyallPending     = new Map(); // userId -> { items, total, expiresAt }
 
-const serverBackups        = new Map(); // guildId -> [{id, ts, ...}]
-const pendingRestores      = new Map(); // userId  -> {type, data, expiresAt, guildId}
 const verificationProcessing = new Set(); // loop guard: userId being processed for verify role switch
 
 const BOOST_DURATION_MS  = 30 * 60 * 1000; // 30 min server boost
@@ -663,79 +654,63 @@ function loadData() {
   } catch (e) { console.error("[Persist] Load failed:", e.message); }
 }
 
-// ── Backup System ──────────────────────────────────────────────────────────────
+// ── Auto-seed empty channels ───────────────────────────────────────────────────
+// Scans all text channels in a guild and posts a starter message in any that
+// have zero messages visible to the bot. Uses CHANNEL_MESSAGES when available,
+// falls back to a generic channel-name-based embed.
 
-const BACKUPS_FILE = "./backups.json";
+const SEED_SKIP_KEYWORDS = ["log", "logs", "staff", "admin", "mod", "ticket", "tickets", "bot-log"];
 
-function loadBackups() {
-  try {
-    if (!fs.existsSync(BACKUPS_FILE)) return;
-    const raw = JSON.parse(fs.readFileSync(BACKUPS_FILE, "utf8"));
-    for (const [guildId, list] of Object.entries(raw)) {
-      serverBackups.set(guildId, list);
-    }
-    console.log("[Backup] Backups loaded from", BACKUPS_FILE);
-  } catch (e) { console.error("[Backup] Load failed:", e.message); }
+function buildGenericChannelEmbed(ch) {
+  const n = ch.name.toLowerCase().replace(/[-_]/g, " ");
+  const topicLine = ch.topic ? `\n\n> ${ch.topic}` : "";
+  return new EmbedBuilder()
+    .setTitle(`💬 Welcome to #${ch.name}!`)
+    .setDescription(`This is **#${ch.name}** — jump in and get the conversation started! 🚀${topicLine}`)
+    .setColor(0x5865f2)
+    .setFooter({ text: "Cases 2.0 • Auto-seeded channel starter" })
+    .setTimestamp();
 }
 
-function saveBackups() {
-  try {
-    const out = {};
-    for (const [guildId, list] of serverBackups.entries()) out[guildId] = list;
-    fs.writeFileSync(BACKUPS_FILE, JSON.stringify(out, null, 2), "utf8");
-  } catch (e) { console.error("[Backup] Save failed:", e.message); }
-}
-
-async function createServerBackup(guild) {
-  const id = `BKP_${Date.now().toString(36).toUpperCase()}`;
-  const ts = Date.now();
-  const channels = guild.channels.cache.map(ch => ({
-    id: ch.id,
-    name: ch.name,
-    type: ch.type,
-    topic: ch.topic ?? null,
-    parentId: ch.parentId ?? null,
-    position: ch.position ?? 0,
-    permOverwrites: (ch.permissionOverwrites?.cache ?? new Map()).map(ow => ({
-      id: ow.id, type: ow.type,
-      allow: ow.allow.bitfield.toString(),
-      deny:  ow.deny.bitfield.toString(),
-    })),
-  }));
-  const roles = guild.roles.cache
-    .filter(r => r.id !== guild.id && !r.managed)
-    .map(r => ({
-      id: r.id, name: r.name, color: r.color, hoist: r.hoist,
-      position: r.position, permissions: r.permissions.bitfield.toString(),
-    }));
-  const backup = { id, ts, guildId: guild.id, guildName: guild.name, channels, roles };
-  const list = serverBackups.get(guild.id) ?? [];
-  list.unshift(backup);
-  if (list.length > 10) list.splice(10);
-  serverBackups.set(guild.id, list);
-  saveBackups();
-  return backup;
-}
-
-function getBotKnownRoleNames() {
-  const names = new Set(REQUIRED_ROLES.map(r => r.name.toLowerCase()));
-  for (const item of SHOP_CATALOG) if (item.type === "role" && item.roleName) names.add(item.roleName.toLowerCase());
-  for (const n of Object.values(LEVEL_ROLES)) names.add(n.toLowerCase());
-  for (const a of ACHIEVEMENTS) if (a.reward?.role) names.add(a.reward.role.toLowerCase());
-  return names;
-}
-
-function getBotKnownChannelNames() {
-  return new Set(
-    SERVER_STRUCTURE.flatMap(cat => cat.channels.map(c => baseName(c.name)))
+async function seedEmptyChannels(guild) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const textChannels = guild.channels.cache.filter(ch =>
+    ch.type === ChannelType.GuildText &&
+    !SEED_SKIP_KEYWORDS.some(kw => ch.name.toLowerCase().includes(kw))
   );
+  for (const [, ch] of textChannels) {
+    try {
+      const me = guild.members.me;
+      const perms = ch.permissionsFor(me);
+      if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.SendMessages)) continue;
+      const msgs = await ch.messages.fetch({ limit: 1 }).catch(() => null);
+      if (!msgs || msgs.size > 0) continue; // already has messages — skip
+      const key = ch.name.toLowerCase();
+      const msgDef = CHANNEL_MESSAGES[key];
+      if (msgDef) {
+        const built = msgDef(guild);
+        if (built && typeof built === "object" && built.embed) {
+          const msg = await ch.send({ embeds: [built.embed], components: built.components ? [built.components] : [] });
+          await msg.pin().catch(() => {});
+        } else if (built) {
+          const msg = await ch.send({ embeds: [built] });
+          await msg.pin().catch(() => {});
+        }
+      } else {
+        await ch.send({ embeds: [buildGenericChannelEmbed(ch)] });
+      }
+      console.log(`[SeedChannels] Posted starter in #${ch.name}`);
+      await sleep(800);
+    } catch (e) {
+      console.error(`[SeedChannels] Failed #${ch.name}:`, e.message);
+    }
+  }
 }
 
 // Save every 5 minutes + on shutdown
 setInterval(saveData, 5 * 60 * 1000);
-setInterval(saveBackups, 5 * 60 * 1000);
-process.on("SIGTERM", () => { saveData(); saveBackups(); process.exit(0); });
-process.on("SIGINT",  () => { saveData(); saveBackups(); process.exit(0); });
+process.on("SIGTERM", () => { saveData(); process.exit(0); });
+process.on("SIGINT",  () => { saveData(); process.exit(0); });
 
 function checkFunCooldown(userId, cmd) {
   const key = `${userId}:${cmd}`;
@@ -1196,6 +1171,18 @@ const SERVER_STRUCTURE = [
     ],
   },
   {
+    name: "🎮 GAME RELATED",
+    channels: [
+      { name: "questions",     topic: "❓ Got questions about CASES Beta? Ask here and the community will help!" },
+      { name: "trading",       topic: "🖥️ Trade items with other players. Post your offers and requests here!" },
+      { name: "bug-reports",   topic: "💥 Found a bug in CASES Beta? Report it here with as much detail as possible." },
+      { name: "your-wins",     topic: "⚔️ Share your best wins, highlights and victories from CASES Beta!" },
+      { name: "win-or-lose",   topic: "🏆 Post your match results — wins and losses both welcome here!" },
+      { name: "marketplace",   topic: "🏷️ Buy, sell and browse items. Check #limited-items for exclusive drops!" },
+      { name: "limited-items", topic: "🔖 Limited & exclusive items only — rare drops, seasonal gear and special offers." },
+    ],
+  },
+  {
     name: "👮 STAFF",
     channels: [
       { name: "staff-chat",     topic: "👮 Staff-only discussion. Keep things professional & on-topic.", staffOnly: true },
@@ -1393,6 +1380,105 @@ const CHANNEL_MESSAGES = {
     )
     .setColor(0x5865f2)
     .setFooter({ text: "Drop your idea below 👇" })
+    .setTimestamp(),
+
+  "trading": () => new EmbedBuilder()
+    .setTitle("🖥️ Trading — Buy, Sell & Swap!")
+    .setDescription(
+      `Welcome to the trading channel! Post your offers and find deals. 🤝\n\n` +
+      `**📋 Trade post format:**\n` +
+      `\`\`\`\n🔄 Offering:\n🔍 Looking For:\n📩 DM me or reply below!\n\`\`\`\n\n` +
+      `**✅ Rules:**\n` +
+      `- Be honest about what you're trading\n` +
+      `- No scamming — report suspicious offers to staff\n` +
+      `- Keep it civil and respect others\n\n` +
+      `> 💡 Check \`#marketplace\` for listed items & \`#limited-items\` for rare drops!`
+    )
+    .setColor(0x5865f2)
+    .setFooter({ text: "Trade smart — no scams allowed 🤝" })
+    .setTimestamp(),
+
+  "bug-reports": () => new EmbedBuilder()
+    .setTitle("💥 Bug Reports — Help Us Fix CASES Beta!")
+    .setDescription(
+      `Found something broken? Report it here so we can squash it! 🐛\n\n` +
+      `**📋 Bug report format:**\n` +
+      `\`\`\`\n🐛 Bug Description:\n📍 Where it happened:\n🔁 How to reproduce:\n📸 Screenshot/Video (if possible):\n\`\`\`\n\n` +
+      `**✅ Good reports get fixed fast. Include as much detail as possible!**\n\n` +
+      `> ⚠️ Please check if the bug is already reported before posting a duplicate.`
+    )
+    .setColor(0xed4245)
+    .setFooter({ text: "Your reports make CASES Beta better 🔧" })
+    .setTimestamp(),
+
+  "your-wins": () => new EmbedBuilder()
+    .setTitle("⚔️ Your Wins — Show Off Your Best Moments!")
+    .setDescription(
+      `This is your place to flex! Post your best wins, clutch plays and highlights. 🔥\n\n` +
+      `**📸 What to share:**\n` +
+      `- Screenshots of big wins\n` +
+      `- Clips of clutch moments\n` +
+      `- Rare drops & epic loot\n` +
+      `- Personal records & milestones\n\n` +
+      `> 🏆 Hype each other up — good vibes only in here!`
+    )
+    .setColor(0xfee75c)
+    .setFooter({ text: "Keep winning 👑" })
+    .setTimestamp(),
+
+  "win-or-lose": () => new EmbedBuilder()
+    .setTitle("🏆 Win or Lose — Post Your Results!")
+    .setDescription(
+      `Share how your matches went — wins AND losses welcome here. No shame! 💪\n\n` +
+      `**📋 How to post:**\n` +
+      `\`\`\`\n✅/❌ Result:\n🎮 Mode / Map:\n📊 Score / Stats:\n💬 Quick thoughts:\n\`\`\`\n\n` +
+      `> 🤝 Win with grace, lose with dignity — respect everyone's results!`
+    )
+    .setColor(0x57f287)
+    .setFooter({ text: "Every game is a learning experience 🎮" })
+    .setTimestamp(),
+
+  "marketplace": () => new EmbedBuilder()
+    .setTitle("🏷️ Marketplace — Trade & Browse Items!")
+    .setDescription(
+      `The CASES Beta marketplace — list items, find deals, and browse what's available. 🛒\n\n` +
+      `**📋 Listing format:**\n` +
+      `\`\`\`\n🏷️ Item(s):\n💰 Price / Trade:\n📦 Quantity:\n📩 Contact:\n\`\`\`\n\n` +
+      `**🔖 Check \`#limited-items\` for exclusive & seasonal drops!**\n\n` +
+      `> ⚠️ Staff do not mediate trades — deal at your own risk. Report scammers to staff.`
+    )
+    .setColor(0xf1c40f)
+    .setFooter({ text: "Buy smart, sell smart 💰" })
+    .setTimestamp(),
+
+  "limited-items": () => new EmbedBuilder()
+    .setTitle("🔖 Limited Items — Exclusive & Rare Drops!")
+    .setDescription(
+      `This channel is for **limited, seasonal and exclusive items only**. 🌟\n\n` +
+      `**What gets posted here:**\n` +
+      `🎃 Seasonal & event items\n` +
+      `💎 Rare and one-of-a-kind drops\n` +
+      `⭐ Staff-featured special offers\n` +
+      `🎁 Giveaway prizes & reward items\n\n` +
+      `**⏳ These items won't be around forever — grab them while you can!**\n\n` +
+      `> 📢 Watch this channel and \`#announcements\` so you never miss a drop!`
+    )
+    .setColor(0xe91e8c)
+    .setFooter({ text: "Limited stock — first come, first served 🔥" })
+    .setTimestamp(),
+
+  "game-questions": () => new EmbedBuilder()
+    .setTitle("❓ Questions — Ask Anything About CASES Beta!")
+    .setDescription(
+      `Got a question about CASES Beta, the server or how things work? Ask here! 🙋\n\n` +
+      `**💡 Tips for asking a good question:**\n` +
+      `- Be specific about what you need help with\n` +
+      `- Include screenshots if relevant\n` +
+      `- Check if it's already been answered above\n\n` +
+      `> 🤝 Community members and staff are here to help — no dumb questions!`
+    )
+    .setColor(0x3498db)
+    .setFooter({ text: "If you're unsure, just ask! 💬" })
     .setTimestamp(),
 
   "create-ticket": () => ({
@@ -1632,7 +1718,11 @@ client.once("clientReady", async () => {
 
   // Load persisted data on startup
   loadData();
-  loadBackups();
+
+  // Seed any empty channels with a starter message
+  for (const [, guild] of client.guilds.cache) {
+    seedEmptyChannels(guild).catch(() => {});
+  }
 
   console.log("All systems online.");
 });
@@ -2406,7 +2496,6 @@ client.on("interactionCreate", async (interaction) => {
     "setup-server", "test-update", "organize_server",
     "give-coins", "remove-coins", "setcoins",
     "givexp", "removexp", "setxp", "resetxp",
-    "backupserver", "restorebackup", "rollbackbotchanges",
   ];
   if (commandName && HEAD_ADMIN_COMMANDS.includes(commandName) && !isHeadAdmin(interaction.member)) {
     return interaction.reply({
@@ -4683,209 +4772,6 @@ client.on("interactionCreate", async (interaction) => {
         new EmbedBuilder().setTitle("❌ Wrong!").setDescription(`Not quite! Better luck next time. Use \`/trivia\` to try again!`).setColor(0xed4245).setTimestamp()
       ], components: [] });
     }
-  }
-
-  // ── /backupserver ─────────────────────────────────────────────────────────────
-  if (commandName === "backupserver") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const guild = interaction.guild;
-    const backup = await createServerBackup(guild);
-    const ts = `<t:${Math.floor(backup.ts / 1000)}:F>`;
-    const allBackups = serverBackups.get(guild.id) ?? [];
-    const listLines = allBackups.map((b, i) =>
-      `${i === 0 ? "**→**" : "   "} \`${b.id}\` — <t:${Math.floor(b.ts / 1000)}:R> — ${b.channels.length} channels, ${b.roles.length} roles`
-    ).join("\n");
-    const embed = new EmbedBuilder()
-      .setTitle("📸 Server Backup Created")
-      .setColor(0x57f287)
-      .addFields(
-        { name: "🆔 Backup ID",  value: `\`${backup.id}\``, inline: true },
-        { name: "🕐 Timestamp",  value: ts,                 inline: true },
-        { name: "📋 Channels",   value: `${backup.channels.length}`, inline: true },
-        { name: "🏷️ Roles",     value: `${backup.roles.length}`,    inline: true },
-        { name: "📦 All Saved Backups (newest first, max 10)", value: listLines || "None" },
-      )
-      .setFooter({ text: `Use /restorebackup id:${backup.id} to restore • /rollbackbotchanges to undo bot changes` })
-      .setTimestamp();
-    const logCh = getLogChannel(guild);
-    if (logCh) logCh.send({ embeds: [
-      new EmbedBuilder().setTitle("📸 Server Backup Created").setColor(0x57f287)
-        .setDescription(`Backup \`${backup.id}\` created by ${interaction.user} at ${ts}`)
-        .setTimestamp()
-    ]}).catch(() => {});
-    return interaction.editReply({ embeds: [embed] });
-  }
-
-  // ── /restorebackup ────────────────────────────────────────────────────────────
-  if (commandName === "restorebackup") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const guild    = interaction.guild;
-    const targetId = interaction.options.getString("id").trim().toUpperCase();
-    const allBackups = serverBackups.get(guild.id) ?? [];
-    const backup = allBackups.find(b => b.id.toUpperCase() === targetId);
-    if (!backup) {
-      const ids = allBackups.map(b => `\`${b.id}\``).join(", ") || "none";
-      return interaction.editReply({ content: `❌ No backup found with ID \`${targetId}\`.\n📦 Available backups: ${ids}` });
-    }
-    // Identify what bot-managed channels/roles are missing vs the backup
-    const knownRoles    = getBotKnownRoleNames();
-    const knownChannels = getBotKnownChannelNames();
-    const missingRoles = backup.roles.filter(r =>
-      knownRoles.has(r.name.toLowerCase()) &&
-      !guild.roles.cache.some(cr => cr.id === r.id || cr.name.toLowerCase() === r.name.toLowerCase())
-    );
-    const missingChannels = backup.channels.filter(ch =>
-      knownChannels.has(baseName(ch.name)) &&
-      !guild.channels.cache.some(cc => cc.id === ch.id || baseName(cc.name) === baseName(ch.name))
-    );
-    if (missingRoles.length === 0 && missingChannels.length === 0) {
-      return interaction.editReply({
-        content: `✅ Backup \`${backup.id}\` checked — no bot-managed channels or roles are missing. Nothing to restore.`,
-      });
-    }
-    const roleLines    = missingRoles.map(r => `🏷️ \`${r.name}\``).join("\n") || "None";
-    const channelLines = missingChannels.map(c => `📌 \`#${c.name}\``).join("\n") || "None";
-    pendingRestores.set(interaction.user.id, {
-      type: "restore", backup, missingRoles, missingChannels,
-      expiresAt: Date.now() + 120_000, guildId: guild.id,
-    });
-    const embed = new EmbedBuilder()
-      .setTitle("♻️ Restore Backup — Preview")
-      .setColor(0xfee75c)
-      .setDescription(`Backup **\`${backup.id}\`** taken <t:${Math.floor(backup.ts / 1000)}:R>.\n\nThe following bot-managed items are **missing** and will be re-created:`)
-      .addFields(
-        { name: "🏷️ Roles to Re-create",    value: roleLines,    inline: true },
-        { name: "📌 Channels to Re-create",  value: channelLines, inline: true },
-      )
-      .setFooter({ text: "Only bot-managed items are restored. Manual server structure is untouched." })
-      .setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("restore_confirm").setLabel("✅ Confirm Restore").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("restore_cancel").setLabel("❌ Cancel").setStyle(ButtonStyle.Danger),
-    );
-    return interaction.editReply({ embeds: [embed], components: [row] });
-  }
-
-  // ── /rollbackbotchanges ───────────────────────────────────────────────────────
-  if (commandName === "rollbackbotchanges") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const guild    = interaction.guild;
-    const allBackups = serverBackups.get(guild.id) ?? [];
-    if (allBackups.length === 0) {
-      return interaction.editReply({ content: "❌ No backups exist for this server. Run `/backupserver` first to create a baseline." });
-    }
-    const latest = allBackups[0]; // most recent backup
-    const knownRoles    = getBotKnownRoleNames();
-    const knownChannels = getBotKnownChannelNames();
-    // Bot-managed roles/channels that exist NOW but were NOT in the latest backup
-    const extraRoles = guild.roles.cache.filter(r =>
-      knownRoles.has(r.name.toLowerCase()) &&
-      !latest.roles.some(br => br.id === r.id || br.name.toLowerCase() === r.name.toLowerCase())
-    );
-    const extraChannels = guild.channels.cache.filter(ch =>
-      knownChannels.has(baseName(ch.name)) &&
-      !latest.channels.some(bc => bc.id === ch.id || baseName(bc.name) === baseName(ch.name))
-    );
-    if (extraRoles.size === 0 && extraChannels.size === 0) {
-      return interaction.editReply({
-        content: `✅ No extra bot-created channels or roles found since backup \`${latest.id}\`. Nothing to roll back.`,
-      });
-    }
-    const roleLines    = extraRoles.map(r => `🏷️ \`${r.name}\` (\`${r.id}\`)`).join("\n")    || "None";
-    const channelLines = extraChannels.map(c => `📌 \`#${c.name}\` (\`${c.id}\`)`).join("\n") || "None";
-    pendingRestores.set(interaction.user.id, {
-      type: "rollback", extraRoles: [...extraRoles.values()], extraChannels: [...extraChannels.values()],
-      backupId: latest.id, expiresAt: Date.now() + 120_000, guildId: guild.id,
-    });
-    const embed = new EmbedBuilder()
-      .setTitle("↩️ Rollback Bot Changes — Preview")
-      .setColor(0xed4245)
-      .setDescription(`Comparing against backup **\`${latest.id}\`** taken <t:${Math.floor(latest.ts / 1000)}:R>.\n\nThe following bot-created items were **added after** that backup and will be **deleted**:`)
-      .addFields(
-        { name: "🏷️ Roles to Delete",    value: roleLines,    inline: true },
-        { name: "📌 Channels to Delete",  value: channelLines, inline: true },
-      )
-      .setFooter({ text: "⚠️ This is destructive. Only bot-managed items will be removed." })
-      .setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("rollback_confirm").setLabel("↩️ Confirm Rollback").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("restore_cancel").setLabel("❌ Cancel").setStyle(ButtonStyle.Secondary),
-    );
-    return interaction.editReply({ embeds: [embed], components: [row] });
-  }
-
-  // ── Button: restore_confirm ───────────────────────────────────────────────────
-  if (interaction.isButton() && interaction.customId === "restore_confirm") {
-    const pending = pendingRestores.get(interaction.user.id);
-    if (!pending || pending.type !== "restore" || Date.now() > pending.expiresAt) {
-      return interaction.update({ content: "⏰ Restore confirmation expired. Re-run `/restorebackup`.", embeds: [], components: [] });
-    }
-    pendingRestores.delete(interaction.user.id);
-    await interaction.update({ content: "♻️ Restoring missing bot-managed items…", embeds: [], components: [] });
-    const guild   = interaction.guild;
-    const results = [];
-    for (const r of pending.missingRoles) {
-      try {
-        await guild.roles.create({ name: r.name, color: r.color, hoist: r.hoist, reason: `Restored from backup ${pending.backup.id}` });
-        results.push(`✅ Role \`${r.name}\` re-created`);
-      } catch (e) { results.push(`❌ Role \`${r.name}\` failed: ${e.message}`); }
-    }
-    for (const ch of pending.missingChannels) {
-      try {
-        const opts = { name: ch.name, type: ch.type, reason: `Restored from backup ${pending.backup.id}` };
-        if (ch.topic) opts.topic = ch.topic;
-        if (ch.parentId) {
-          const parent = guild.channels.cache.get(ch.parentId);
-          if (parent) opts.parent = parent;
-        }
-        await guild.channels.create(opts);
-        results.push(`✅ Channel \`#${ch.name}\` re-created`);
-      } catch (e) { results.push(`❌ Channel \`#${ch.name}\` failed: ${e.message}`); }
-    }
-    const logCh = getLogChannel(guild);
-    if (logCh) logCh.send({ embeds: [
-      new EmbedBuilder().setTitle("♻️ Backup Restored").setColor(0x57f287)
-        .setDescription(`Restore from \`${pending.backup.id}\` by ${interaction.user}:\n${results.join("\n")}`)
-        .setTimestamp()
-    ]}).catch(() => {});
-    return interaction.editReply({ content: `♻️ **Restore complete:**\n${results.join("\n")}` });
-  }
-
-  // ── Button: rollback_confirm ──────────────────────────────────────────────────
-  if (interaction.isButton() && interaction.customId === "rollback_confirm") {
-    const pending = pendingRestores.get(interaction.user.id);
-    if (!pending || pending.type !== "rollback" || Date.now() > pending.expiresAt) {
-      return interaction.update({ content: "⏰ Rollback confirmation expired. Re-run `/rollbackbotchanges`.", embeds: [], components: [] });
-    }
-    pendingRestores.delete(interaction.user.id);
-    await interaction.update({ content: "↩️ Rolling back bot-created items…", embeds: [], components: [] });
-    const guild   = interaction.guild;
-    const results = [];
-    for (const ch of pending.extraChannels) {
-      try {
-        await ch.delete(`Rollback to backup ${pending.backupId} by ${interaction.user.tag}`);
-        results.push(`✅ Channel \`#${ch.name}\` deleted`);
-      } catch (e) { results.push(`❌ Channel \`#${ch.name}\` failed: ${e.message}`); }
-    }
-    for (const r of pending.extraRoles) {
-      try {
-        await r.delete(`Rollback to backup ${pending.backupId} by ${interaction.user.tag}`);
-        results.push(`✅ Role \`${r.name}\` deleted`);
-      } catch (e) { results.push(`❌ Role \`${r.name}\` failed: ${e.message}`); }
-    }
-    const logCh = getLogChannel(guild);
-    if (logCh) logCh.send({ embeds: [
-      new EmbedBuilder().setTitle("↩️ Bot Changes Rolled Back").setColor(0xed4245)
-        .setDescription(`Rollback to \`${pending.backupId}\` by ${interaction.user}:\n${results.join("\n")}`)
-        .setTimestamp()
-    ]}).catch(() => {});
-    return interaction.editReply({ content: `↩️ **Rollback complete:**\n${results.join("\n")}` });
-  }
-
-  // ── Button: restore_cancel ────────────────────────────────────────────────────
-  if (interaction.isButton() && interaction.customId === "restore_cancel") {
-    pendingRestores.delete(interaction.user.id);
-    return interaction.update({ content: "❌ Operation cancelled.", embeds: [], components: [] });
   }
 
   } catch (err) {
