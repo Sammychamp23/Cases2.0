@@ -1116,10 +1116,9 @@ const SERVER_STRUCTURE = [
   {
     name: "💬 COMMUNITY",
     channels: [
-      { name: "chat",      topic: "💬 General chat — keep it friendly, respectful & fun! 🎉" },
-      { name: "media",     topic: "🖼️ Share images, videos, screenshots & creative content. No NSFW." },
-      { name: "questions", topic: "❓ Ask anything — staff and members are here to help you out!" },
-      { name: "memes",     topic: "😂 Post your best memes. Keep it clean & community-friendly." },
+      { name: "chat",  topic: "💬 General chat — keep it friendly, respectful & fun! 🎉" },
+      { name: "media", topic: "🖼️ Share images, videos, screenshots & creative content. No NSFW." },
+      { name: "memes", topic: "😂 Post your best memes. Keep it clean & community-friendly." },
     ],
   },
   {
@@ -1511,18 +1510,33 @@ const CHANNEL_MESSAGES = {
 async function setupServer(guild, interaction) {
   await interaction.editReply({ content: "🔧 Setting up server structure — renaming & updating existing channels, creating missing ones..." });
 
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   let staffRole = guild.roles.cache.find((r) => r.permissions.has(PermissionFlagsBits.ManageGuild) && !r.managed && r.id !== guild.id);
   let created = 0, updated = 0, skipped = 0;
+  const errors = [];
 
   for (const cat of SERVER_STRUCTURE) {
     let category = guild.channels.cache.find(
       (c) => c.type === ChannelType.GuildCategory && baseName(c.name) === baseName(cat.name)
     );
     if (!category) {
-      try { category = await guild.channels.create({ name: cat.name, type: ChannelType.GuildCategory }); created++; }
-      catch (err) { console.error("Failed to create category", cat.name, err.message); continue; }
+      // Attempt creation with one retry (handles transient rate limits)
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          category = await guild.channels.create({ name: cat.name, type: ChannelType.GuildCategory });
+          created++;
+          await sleep(600);
+          break;
+        } catch (err) {
+          console.error(`Failed to create category ${cat.name} (attempt ${attempt}):`, err.message);
+          if (attempt < 2) await sleep(3000);
+          else { errors.push(`❌ Category \`${cat.name}\`: ${err.message}`); }
+        }
+      }
+      if (!category) continue; // genuinely couldn't create — skip channels
     } else if (category.name !== cat.name) {
-      try { await category.setName(cat.name); updated++; } catch (err) { console.error("Failed to rename category", cat.name, err.message); }
+      try { await category.setName(cat.name); updated++; await sleep(400); }
+      catch (err) { console.error("Failed to rename category", cat.name, err.message); }
     }
 
     for (const ch of cat.channels) {
@@ -1531,13 +1545,11 @@ async function setupServer(guild, interaction) {
         (c) => c.type === chType && baseName(c.name) === baseName(ch.name)
       );
       if (existing) {
-        // Update topic if it has changed
         if (!ch.voice && ch.topic && existing.topic !== ch.topic) {
-          try { await existing.setTopic(ch.topic); updated++; } catch { /* ignore */ }
+          try { await existing.setTopic(ch.topic); updated++; await sleep(300); } catch { /* ignore */ }
         }
-        // Move to correct category if misplaced
         if (existing.parentId !== category.id) {
-          try { await existing.setParent(category.id, { lockPermissions: false }); } catch { /* ignore */ }
+          try { await existing.setParent(category.id, { lockPermissions: false }); await sleep(300); } catch { /* ignore */ }
         }
         skipped++;
         continue;
@@ -1562,6 +1574,7 @@ async function setupServer(guild, interaction) {
           permissionOverwrites: overwrites,
         });
         created++;
+        await sleep(500);
 
         if (!ch.voice) {
           const msgBuilder = CHANNEL_MESSAGES[ch.name];
@@ -1573,15 +1586,23 @@ async function setupServer(guild, interaction) {
                 : { embeds: [built] };
               const msg = await newCh.send(payload);
               await msg.pin().catch(() => {});
+              await sleep(400);
             } catch (e) { console.error("Channel message error:", ch.name, e.message); }
           }
         }
-      } catch (err) { console.error("Failed to create channel", ch.name, err.message); }
+      } catch (err) {
+        console.error("Failed to create channel", ch.name, err.message);
+        errors.push(`❌ Channel \`#${ch.name}\`: ${err.message}`);
+      }
     }
   }
 
+  // Seed any remaining empty channels that didn't get a message above
+  seedEmptyChannels(guild).catch(() => {});
+
+  const errorBlock = errors.length ? `\n\n⚠️ **${errors.length} error(s):**\n${errors.slice(0, 5).join("\n")}` : "";
   await interaction.editReply({
-    content: `✅ Server setup complete!\n• **${created}** channels/categories created\n• **${updated}** renamed or had topics updated\n• **${skipped}** already up to date`,
+    content: `✅ Server setup complete!\n• **${created}** channels/categories created\n• **${updated}** renamed or had topics updated\n• **${skipped}** already up to date${errorBlock}`,
   });
 }
 
