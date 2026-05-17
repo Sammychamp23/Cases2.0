@@ -221,6 +221,10 @@ const commands = [
     .addUserOption((o) => o.setName("user").setDescription("Member to hug").setRequired(true)),
   new SlashCommandBuilder().setName("coinflip").setDescription("🪙 Flip a coin — heads or tails?"),
   new SlashCommandBuilder().setName("trivia").setDescription("🧠 Answer a trivia question and win coins!"),
+  new SlashCommandBuilder().setName("report").setDescription("🚨 Anonymously report a member to staff")
+    .addUserOption((o) => o.setName("user").setDescription("The member you want to report").setRequired(true))
+    .addStringOption((o) => o.setName("reason").setDescription("Why are you reporting this member?").setRequired(true))
+    .addStringOption((o) => o.setName("evidence").setDescription("Screenshot URL or extra details (optional)")),
 ].map((cmd) => cmd.toJSON());
 
 // ── Command → required channel ─────────────────────────────────────────────────
@@ -4767,6 +4771,53 @@ client.on("interactionCreate", async (interaction) => {
         .setColor(equipped.length ? 0x57f287 : 0x99aab5)
         .setTimestamp()
     ]});
+  }
+
+  // ── /report ───────────────────────────────────────────────────────────────────
+  if (commandName === "report") {
+    const target   = interaction.options.getMember("user");
+    const reason   = interaction.options.getString("reason");
+    const evidence = interaction.options.getString("evidence") ?? null;
+
+    if (!target) return interaction.reply({ content: "❌ Could not find that user.", flags: MessageFlags.Ephemeral });
+    if (target.id === interaction.user.id) return interaction.reply({ content: "❌ You cannot report yourself.", flags: MessageFlags.Ephemeral });
+    if (target.user.bot) return interaction.reply({ content: "❌ You cannot report a bot.", flags: MessageFlags.Ephemeral });
+
+    const reportEmbed = new EmbedBuilder()
+      .setTitle("🚨 Member Report")
+      .setColor(0xed4245)
+      .addFields(
+        { name: "👤 Reported User",  value: `${target} — \`${target.user.tag}\`\nID: \`${target.id}\``, inline: false },
+        { name: "🙋 Reported By",    value: `${interaction.user} — \`${interaction.user.tag}\`\nID: \`${interaction.user.id}\``, inline: false },
+        { name: "📄 Reason",         value: reason, inline: false },
+        { name: "🔗 Reported In",    value: `${interaction.channel} (\`#${interaction.channel.name}\`)`, inline: true },
+      )
+      .setThumbnail(target.user.displayAvatarURL({ dynamic: true }))
+      .setFooter({ text: "Review this report and take action if needed." })
+      .setTimestamp();
+
+    if (evidence) reportEmbed.addFields({ name: "🖼️ Evidence", value: evidence, inline: false });
+
+    const logCh = getLogChannel(interaction.guild);
+    const staffCh = findChannel(interaction.guild, "staff-chat");
+    const destination = logCh ?? staffCh;
+
+    if (destination) {
+      await destination.send({ embeds: [reportEmbed] });
+    } else {
+      console.warn("[Report] No log or staff-chat channel found to post report.");
+    }
+
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("✅ Report Submitted")
+          .setDescription(`Your report against **${target.user.username}** has been sent to staff.\n\nReports are anonymous — staff will not be told who submitted this.`)
+          .setColor(0x57f287)
+          .setTimestamp()
+      ],
+      flags: MessageFlags.Ephemeral,
+    });
   }
 
   // ── Button: trivia_0 / trivia_1 / trivia_2 ────────────────────────────────────
