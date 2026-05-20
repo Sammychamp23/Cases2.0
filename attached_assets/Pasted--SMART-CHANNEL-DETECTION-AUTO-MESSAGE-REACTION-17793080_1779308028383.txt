@@ -1,0 +1,144 @@
+==================================================
+SMART CHANNEL DETECTION + AUTO MESSAGE + REACTION ROLES SYSTEM
+==================================================
+
+Add a universal command system for the “Cases 2.0” Discord bot.
+
+IMPORTANT CONTEXT:
+This bot is a REPLACEMENT bot for an existing live Roblox game Discord server system.
+
+==================================================
+CRITICAL NON-NEGOTIABLE RULE (ABSOLUTE SAFETY RULE)
+==================================================
+
+THE BOT MUST NOT:
+- Replace anything that already exists in the server
+- Duplicate ANY existing roles, channels, systems, or configurations
+- Recreate systems that already exist under a different name
+- Reset, overwrite, or rebuild existing server structures
+- Remove or modify existing manual server setups
+
+THE BOT MUST ONLY:
+- Detect what already exists
+- Reuse existing systems wherever possible
+- Extend existing systems ONLY if needed
+- Create ONLY missing systems that do not already exist
+
+IF SOMETHING EXISTS:
+- DO NOT replace it
+- DO NOT duplicate it
+- DO NOT recreate it
+- DO NOT override it
+
+==================================================
+1) UNIVERSAL CHANNEL DETECTION COMMAND
+==================================================
+
+Create a command usable in ANY channel:
+
+- /setupchannel OR /channelconfig
+
+When executed:
+- Detect current channel
+- Read channel name
+- Identify channel type from keywords
+- Send a relevant embed message ONLY IF ONE DOES NOT ALREADY EXIST
+
+==================================================
+CHANNEL TYPE DETECTION RULES
+==================================================
+
+- events → "events", "event"
+- giveaways → "giveaway", "giveaways"
+- changelog → "changelog", "change-log", "updates"
+- sneak peeks → "sneak", "sneak-peek", "preview"
+- announcements → "announcement", "announcements", "announce"
+- development blog → "dev", "development", "blog", "dev-blog"
+
+==================================================
+AUTO EMBED MESSAGE RULES
+==================================================
+
+- DO NOT send a new embed if one already exists
+- DO NOT replace existing embeds
+- DO NOT edit or overwrite manual messages
+- ONLY create a message if the channel has no setup message yet
+
+==================================================
+2) REACTION / BUTTON ROLE SYSTEM
+==================================================
+
+Create opt-in notification roles ONLY IF THEY DO NOT ALREADY EXIST.
+
+Roles:
+- Events Ping
+- Giveaways Ping
+- Changelog Ping
+- Sneak Peek Ping
+- Announcement Ping
+- Dev Blog Ping
+
+RULES:
+- NEVER create duplicate roles
+- NEVER replace existing roles
+- NEVER recreate roles with same purpose under different names
+- ALWAYS reuse existing roles if found
+
+Each channel should have:
+- ONE reaction/button panel only
+- DO NOT create multiple panels for the same channel
+
+==================================================
+3) GLOBAL “PING BYPASS” ROLE SYSTEM
+==================================================
+
+Special role:
+- Ping Bypass / No Pings
+
+FUNCTION:
+- Users with this role must NEVER be pinged by bot systems
+
+Applies to:
+- Events
+- Giveaways
+- Announcements
+- Dev updates
+- Any broadcast system
+
+RULE:
+- DO NOT create this role if it already exists
+- DO NOT replace existing role
+- ALWAYS reuse existing role if found
+
+==================================================
+4) SYSTEM INTEGRATION RULES
+==================================================
+
+This system must integrate with existing server systems:
+
+- Verification system
+- XP system
+- Economy system
+- Shop system
+
+ABSOLUTE RULE:
+- DO NOT replace existing systems
+- DO NOT duplicate existing systems
+- DO NOT rebuild existing systems
+- ONLY extend or reuse existing systems safely
+
+==================================================
+5) SAFETY & STABILITY RULES
+==================================================
+
+- No spam messages
+- No duplicate embeds
+- No duplicate roles
+- No duplicate panels
+- No overwriting existing configurations
+- Persistent database storage for mappings
+- Safe restart behavior without resetting anything
+
+==================================================
+END OF SYSTEM
+==================================================

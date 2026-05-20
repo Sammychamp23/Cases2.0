@@ -221,6 +221,7 @@ const commands = [
     .addUserOption((o) => o.setName("user").setDescription("Member to hug").setRequired(true)),
   new SlashCommandBuilder().setName("coinflip").setDescription("🪙 Flip a coin — heads or tails?"),
   new SlashCommandBuilder().setName("trivia").setDescription("🧠 Answer a trivia question and win coins!"),
+  new SlashCommandBuilder().setName("setupchannel").setDescription("📋 Post a channel info embed + ping role panel in this channel (safe — skips if already set up)"),
   new SlashCommandBuilder().setName("report").setDescription("🚨 Anonymously report a member to staff")
     .addUserOption((o) => o.setName("user").setDescription("The member you want to report").setRequired(true))
     .addStringOption((o) => o.setName("reason").setDescription("Why are you reporting this member?").setRequired(true))
@@ -267,6 +268,7 @@ const lives           = new Map(); // userId -> number (default 5, lose 1 per sp
 const kickedUsers     = new Set(); // userIds auto-kicked for 0 lives (next offense = ban)
 const recentJoins     = [];        // join timestamps for raid detection
 let   raidLocked      = false;     // true while server is in raid-lockdown
+const setupChannels   = new Set(); // channelIds configured via /setupchannel (persisted)
 
 // ── Permission bit mask used by lock/raid systems ──────────────────────────────
 const LOCK_BITS = PermissionFlagsBits.SendMessages | PermissionFlagsBits.CreatePublicThreads | PermissionFlagsBits.SendMessagesInThreads;
@@ -634,6 +636,7 @@ function saveData() {
       msgCount:        serializeMap(msgCount),
       inviteCount:     serializeMap(inviteCount),
     };
+    payload.setupChannels = [...setupChannels];
     fs.writeFileSync(PERSIST_FILE, JSON.stringify(payload), "utf8");
   } catch (e) { console.error("[Persist] Save failed:", e.message); }
 }
@@ -654,8 +657,71 @@ function loadData() {
     if (raw.userInventory)   for (const [k,v] of Object.entries(raw.userInventory)) {
       userInventory.set(k, v && v.__map ? new Map(v.entries) : new Map(Object.entries(v ?? {})));
     }
+    if (raw.setupChannels)   for (const id of raw.setupChannels) setupChannels.add(id);
     console.log("[Persist] Data loaded from", PERSIST_FILE);
   } catch (e) { console.error("[Persist] Load failed:", e.message); }
+}
+
+// ── Ping Role System ──────────────────────────────────────────────────────────
+
+const PING_BYPASS_ROLE = "No Pings";
+
+const PING_ROLE_CONFIG = {
+  events:       { roleName: "Events Ping",       emoji: "📅", label: "Events" },
+  giveaways:    { roleName: "Giveaways Ping",    emoji: "🎉", label: "Giveaways" },
+  changelog:    { roleName: "Changelog Ping",    emoji: "📋", label: "Changelog" },
+  sneakpeek:    { roleName: "Sneak Peek Ping",   emoji: "👀", label: "Sneak Peek" },
+  announcement: { roleName: "Announcement Ping", emoji: "📢", label: "Announcements" },
+  devblog:      { roleName: "Dev Blog Ping",     emoji: "🛠️", label: "Dev Blog" },
+};
+
+function detectChannelType(channelName) {
+  const n = channelName.toLowerCase().replace(/_/g, "-");
+  if (/event/.test(n))                                      return "events";
+  if (/giveaway/.test(n))                                   return "giveaways";
+  if (/change-?log|changelog|updates/.test(n))              return "changelog";
+  if (/sneak|preview/.test(n))                              return "sneakpeek";
+  if (/announce/.test(n))                                   return "announcement";
+  if (/\bdev\b|dev-blog|development|blog/.test(n))          return "devblog";
+  return null;
+}
+
+async function findOrCreateRole(guild, name) {
+  const existing = guild.roles.cache.find((r) => r.name.toLowerCase() === name.toLowerCase());
+  if (existing) return existing;
+  return guild.roles.create({ name, mentionable: true, reason: "Auto-created by /setupchannel" });
+}
+
+function buildSetupChannelEmbed(type, guild) {
+  const cfg = PING_ROLE_CONFIG[type];
+  const descriptions = {
+    events:       `${cfg.emoji} **Events are announced here!**\n\nClick below to get pinged when a new event drops so you never miss out.\n\n🎮 Look out for tournaments, game nights, and community challenges!`,
+    giveaways:    `${cfg.emoji} **Giveaways drop here!**\n\nReact 🎉 on any active giveaway post to enter.\n\nClick below to get pinged when a new giveaway starts — the more active you are, the more giveaways we host!`,
+    changelog:    `${cfg.emoji} **Game updates & patch notes are posted here.**\n\nClick below to get pinged when new changes land.\n\n🛠️ Updates include bug fixes, new features, balance changes, and more.`,
+    sneakpeek:    `${cfg.emoji} **Exclusive previews of upcoming content drop here.**\n\nClick below to get pinged when a new sneak peek is posted.\n\n🎮 Be the first to see what's coming to CASES Beta!`,
+    announcement: `${cfg.emoji} **Important server & game announcements are posted here.**\n\nClick below to get pinged for major news.\n\n📌 Big updates, server changes, and game news drop here first.`,
+    devblog:      `${cfg.emoji} **Behind-the-scenes dev updates from the team.**\n\nClick below to get pinged when a new dev post goes out.\n\n💡 See exactly how CASES Beta is being built and improved.`,
+  };
+  return new EmbedBuilder()
+    .setTitle(`${cfg.emoji} ${cfg.label} Channel`)
+    .setDescription(descriptions[type])
+    .setColor(0x5865f2)
+    .setFooter({ text: `${guild.name} • Ping roles are always optional` })
+    .setTimestamp();
+}
+
+function buildPingRoleRow(type) {
+  const cfg = PING_ROLE_CONFIG[type];
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`pingrole_${type}`)
+      .setLabel(`${cfg.emoji} Toggle ${cfg.label} Pings`)
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("pingrole_nopings")
+      .setLabel("🚫 Silence All Pings")
+      .setStyle(ButtonStyle.Secondary),
+  );
 }
 
 // ── Auto-seed empty channels ───────────────────────────────────────────────────
@@ -3529,7 +3595,15 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle("🎉 Giveaway Ended!")
         .setDescription(`**Prize:** ${gw.prize}\n\n🏆 **Winner${winners.length > 1 ? "s" : ""}:** ${mentions}`)
         .setColor(0x57f287).setTimestamp();
-      channel.send({ content: `Congratulations ${mentions}! 🎉`, embeds: [endEmbed] }).catch(() => {});
+      // Respect "No Pings" bypass role — don't @mention those users in content
+      const noPingsRole = guild.roles.cache.find((r) => r.name.toLowerCase() === PING_BYPASS_ROLE.toLowerCase());
+      const pingableWinners = noPingsRole
+        ? winners.filter((id) => !guild.members.cache.get(id)?.roles.cache.has(noPingsRole.id))
+        : winners;
+      const pingContent = pingableWinners.length > 0
+        ? `Congratulations ${pingableWinners.map((id) => `<@${id}>`).join(", ")}! 🎉`
+        : null;
+      channel.send({ content: pingContent, embeds: [endEmbed] }).catch(() => {});
     }, duration * 60 * 1000);
     return;
   }
@@ -4771,6 +4845,107 @@ client.on("interactionCreate", async (interaction) => {
         .setColor(equipped.length ? 0x57f287 : 0x99aab5)
         .setTimestamp()
     ]});
+  }
+
+  // ── /setupchannel ─────────────────────────────────────────────────────────────
+  if (commandName === "setupchannel") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const ch = interaction.channel;
+
+    // Guard: already set up
+    if (setupChannels.has(ch.id)) {
+      return interaction.editReply({ content: "✅ This channel already has a setup panel. Nothing was changed." });
+    }
+
+    // Detect type from channel name
+    const type = detectChannelType(ch.name);
+    if (!type) {
+      return interaction.editReply({
+        content: `❓ Couldn't auto-detect this channel's type from its name.\n\n**Recognised keywords:**\n• \`events\`, \`event\`\n• \`giveaway\`, \`giveaways\`\n• \`changelog\`, \`change-log\`, \`updates\`\n• \`sneak\`, \`sneak-peek\`, \`preview\`\n• \`announcement\`, \`announcements\`, \`announce\`\n• \`dev\`, \`dev-blog\`, \`development\`, \`blog\``,
+      });
+    }
+
+    // Find or create the ping role and "No Pings" role
+    let pingRole, bypassRole;
+    try {
+      pingRole   = await findOrCreateRole(interaction.guild, PING_ROLE_CONFIG[type].roleName);
+      bypassRole = await findOrCreateRole(interaction.guild, PING_BYPASS_ROLE);
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Couldn't create roles: ${err.message}` });
+    }
+
+    // Double-check: does a bot embed already exist in this channel?
+    const recent = await ch.messages.fetch({ limit: 10 }).catch(() => null);
+    const alreadyHasPanel = recent?.some(
+      (m) => m.author.id === client.user.id && m.embeds.length > 0 && m.components.length > 0
+    );
+    if (alreadyHasPanel) {
+      setupChannels.add(ch.id);
+      saveData();
+      return interaction.editReply({ content: "✅ A panel already exists in this channel. Marked as set up — nothing was changed." });
+    }
+
+    // Post the embed + button row
+    const embed = buildSetupChannelEmbed(type, interaction.guild);
+    const row   = buildPingRoleRow(type);
+    await ch.send({ embeds: [embed], components: [row] });
+
+    setupChannels.add(ch.id);
+    saveData();
+
+    const cfg = PING_ROLE_CONFIG[type];
+    return interaction.editReply({
+      content: `✅ **#${ch.name}** is set up!\n• Created/reused role: **${cfg.roleName}**\n• Created/reused bypass role: **${PING_BYPASS_ROLE}**\n\nMembers can click the buttons to opt in/out of pings.`,
+    });
+  }
+
+  // ── Button: pingrole_* ────────────────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("pingrole_")) {
+    const key    = interaction.customId.replace("pingrole_", "");
+    const member = interaction.member;
+
+    if (key === "nopings") {
+      const role = interaction.guild.roles.cache.find((r) => r.name.toLowerCase() === PING_BYPASS_ROLE.toLowerCase())
+        ?? await findOrCreateRole(interaction.guild, PING_BYPASS_ROLE).catch(() => null);
+      if (!role) return interaction.reply({ content: "❌ Could not find the No Pings role.", flags: MessageFlags.Ephemeral });
+
+      const hasRole = member.roles.cache.has(role.id);
+      if (hasRole) {
+        await member.roles.remove(role);
+        return interaction.reply({
+          content: "🔔 **Pings re-enabled.** You'll receive pings from the roles you've opted into.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } else {
+        await member.roles.add(role);
+        return interaction.reply({
+          content: `🚫 **All pings silenced.** You have the **${PING_BYPASS_ROLE}** role — bot broadcast pings will skip you.\n\n💡 Tip: You can also mute individual ping roles in your server notification settings.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    }
+
+    const cfg = PING_ROLE_CONFIG[key];
+    if (!cfg) return interaction.reply({ content: "❌ Unknown role type.", flags: MessageFlags.Ephemeral });
+
+    const role = interaction.guild.roles.cache.find((r) => r.name.toLowerCase() === cfg.roleName.toLowerCase())
+      ?? await findOrCreateRole(interaction.guild, cfg.roleName).catch(() => null);
+    if (!role) return interaction.reply({ content: "❌ Could not find the ping role.", flags: MessageFlags.Ephemeral });
+
+    const hasRole = member.roles.cache.has(role.id);
+    if (hasRole) {
+      await member.roles.remove(role);
+      return interaction.reply({
+        content: `${cfg.emoji} **${cfg.label} pings removed.** You won't be notified for ${cfg.label.toLowerCase()} anymore.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    } else {
+      await member.roles.add(role);
+      return interaction.reply({
+        content: `${cfg.emoji} **${cfg.label} pings enabled!** You'll be notified when ${cfg.label.toLowerCase()} are posted.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
   }
 
   // ── /report ───────────────────────────────────────────────────────────────────
