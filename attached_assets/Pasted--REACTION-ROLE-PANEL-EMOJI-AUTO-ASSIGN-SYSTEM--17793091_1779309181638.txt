@@ -1,0 +1,87 @@
+==================================================
+REACTION ROLE PANEL (EMOJI AUTO-ASSIGN SYSTEM)
+==================================================
+
+IMPORTANT:
+- DO NOT create new channels
+- DO NOT duplicate existing roles
+- DO NOT create multiple reaction role messages
+- ONLY use the existing reaction role channel already in the server
+
+==================================================
+SYSTEM BEHAVIOUR
+==================================================
+
+The bot must send ONE single embed message inside the existing reaction role channel.
+
+This message must:
+- Auto-assign emojis to each category below
+- Allow users to click emojis to receive/remove roles instantly
+- Persist role assignments across restarts
+- Remove roles when reaction is removed
+
+==================================================
+EMOJI → ROLE MAPPING (CUSTOM CHANNEL SETUP)
+==================================================
+
+⚙️ → 🚧 Development Blog (🚧-development-blog)  
+📣 → Announcements (📣• announcements)  
+👀 → Sneak Peek (👀 -sneak-peak)  
+🧾 → Changelog (⚙️-change-blog)  
+🎊 → Giveaways (Giveaway 🎊)  
+📅 → Events (Event 📅)  
+
+==================================================
+MESSAGE FORMAT
+==================================================
+
+Embed Title:
+"Select Your Notifications"
+
+Embed Description:
+"Click the emojis below to join or leave notification roles for each category."
+
+Then the bot MUST automatically react with:
+
+⚙️ 📣 👀 🧾 🎊 📅
+
+==================================================
+ROLE LOGIC
+==================================================
+
+Each emoji toggles its matching role:
+
+- Add role when reacted
+- Remove role when reaction is removed
+
+Rules:
+- No duplicate role assignment
+- No spam toggling
+- Must sync correctly after bot restart
+
+==================================================
+ANTI-DUPLICATION RULE
+==================================================
+
+Before sending the panel:
+- Check if the reaction role message already exists
+- If it exists → EDIT/update it instead of creating a new one
+- NEVER create multiple panels in the same channel
+
+==================================================
+CHANNEL RULE
+==================================================
+
+- MUST use existing reaction-role channel
+- MUST NOT create or rename channels
+- MUST NOT duplicate systems
+
+==================================================
+SAFETY RULES
+==================================================
+
+- Do NOT duplicate roles
+- Do NOT duplicate messages
+- Do NOT overwrite unrelated messages
+- Only manage reaction-role system assets
+================================================

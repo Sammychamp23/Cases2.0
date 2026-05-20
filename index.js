@@ -222,6 +222,7 @@ const commands = [
   new SlashCommandBuilder().setName("coinflip").setDescription("🪙 Flip a coin — heads or tails?"),
   new SlashCommandBuilder().setName("trivia").setDescription("🧠 Answer a trivia question and win coins!"),
   new SlashCommandBuilder().setName("setupchannel").setDescription("📋 Post a channel info embed + ping role panel in this channel (safe — skips if already set up)"),
+  new SlashCommandBuilder().setName("post-reaction-roles").setDescription("📋 Post or refresh the reaction role panel in the reaction-role channel"),
   new SlashCommandBuilder().setName("report").setDescription("🚨 Anonymously report a member to staff")
     .addUserOption((o) => o.setName("user").setDescription("The member you want to report").setRequired(true))
     .addStringOption((o) => o.setName("reason").setDescription("Why are you reporting this member?").setRequired(true))
@@ -269,6 +270,12 @@ const kickedUsers     = new Set(); // userIds auto-kicked for 0 lives (next offe
 const recentJoins     = [];        // join timestamps for raid detection
 let   raidLocked      = false;     // true while server is in raid-lockdown
 const setupChannels   = new Set(); // channelIds configured via /setupchannel (persisted)
+
+// ── Reaction Role Panel ────────────────────────────────────────────────────────
+const REACTION_ROLE_MAP    = { "⚙️": "Dev Blog Ping", "📣": "Announcement Ping", "👀": "Sneak Peek Ping", "🧾": "Changelog Ping", "🎊": "Giveaways Ping", "📅": "Events Ping" };
+const REACTION_ROLE_EMOJIS = ["⚙️", "📣", "👀", "🧾", "🎊", "📅"];
+let   reactionRoleMsgId     = null; // persisted panel message ID
+let   reactionRoleChannelId = null; // persisted panel channel ID
 
 // ── Permission bit mask used by lock/raid systems ──────────────────────────────
 const LOCK_BITS = PermissionFlagsBits.SendMessages | PermissionFlagsBits.CreatePublicThreads | PermissionFlagsBits.SendMessagesInThreads;
@@ -636,7 +643,9 @@ function saveData() {
       msgCount:        serializeMap(msgCount),
       inviteCount:     serializeMap(inviteCount),
     };
-    payload.setupChannels = [...setupChannels];
+    payload.setupChannels        = [...setupChannels];
+    payload.reactionRoleMsgId     = reactionRoleMsgId;
+    payload.reactionRoleChannelId = reactionRoleChannelId;
     fs.writeFileSync(PERSIST_FILE, JSON.stringify(payload), "utf8");
   } catch (e) { console.error("[Persist] Save failed:", e.message); }
 }
@@ -657,7 +666,9 @@ function loadData() {
     if (raw.userInventory)   for (const [k,v] of Object.entries(raw.userInventory)) {
       userInventory.set(k, v && v.__map ? new Map(v.entries) : new Map(Object.entries(v ?? {})));
     }
-    if (raw.setupChannels)   for (const id of raw.setupChannels) setupChannels.add(id);
+    if (raw.setupChannels)        for (const id of raw.setupChannels) setupChannels.add(id);
+    if (raw.reactionRoleMsgId)     reactionRoleMsgId     = raw.reactionRoleMsgId;
+    if (raw.reactionRoleChannelId) reactionRoleChannelId = raw.reactionRoleChannelId;
     console.log("[Persist] Data loaded from", PERSIST_FILE);
   } catch (e) { console.error("[Persist] Load failed:", e.message); }
 }
@@ -1815,6 +1826,14 @@ client.once("clientReady", async () => {
     seedEmptyChannels(guild).catch(() => {});
   }
 
+  // Warm reaction-role panel into cache so reactions fire correctly after restart
+  if (reactionRoleChannelId && reactionRoleMsgId) {
+    for (const [, guild] of client.guilds.cache) {
+      const ch = guild.channels.cache.get(reactionRoleChannelId);
+      if (ch) { ch.messages.fetch(reactionRoleMsgId).catch(() => {}); break; }
+    }
+  }
+
   console.log("All systems online.");
 });
 
@@ -2192,8 +2211,20 @@ client.on("messageReactionAdd", async (reaction, user) => {
 
   const channelName = reaction.message.channel?.name?.toLowerCase() ?? "";
 
-  // Enforce reaction-only channels
-  if (channelName.includes("verify") || channelName.includes("reaction-roles")) {
+  // Reaction role panel — assign role when emoji added
+  if (reaction.message.id === reactionRoleMsgId) {
+    const roleName = REACTION_ROLE_MAP[reaction.emoji.name];
+    if (!roleName) return;
+    const guild  = reaction.message.guild;
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    if (!member) return;
+    const role = guild.roles.cache.find((r) => r.name.toLowerCase() === roleName.toLowerCase());
+    if (role && !member.roles.cache.has(role.id)) await member.roles.add(role).catch(() => {});
+    return;
+  }
+
+  // Enforce reaction-only channels (block everything else in verify/reaction-role channels)
+  if (channelName.includes("verify") || channelName.includes("reaction-role")) {
     try { await reaction.users.remove(user.id); } catch { /* ignore */ }
     return;
   }
@@ -2216,6 +2247,23 @@ client.on("messageReactionAdd", async (reaction, user) => {
     }
     return;
   }
+});
+
+// ── Reaction remove → role removal ────────────────────────────────────────────
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial)         { try { await reaction.fetch();         } catch { return; } }
+  if (reaction.message.partial) { try { await reaction.message.fetch(); } catch { return; } }
+  if (reaction.message.id !== reactionRoleMsgId) return;
+
+  const roleName = REACTION_ROLE_MAP[reaction.emoji.name];
+  if (!roleName) return;
+  const guild  = reaction.message.guild;
+  const member = await guild.members.fetch(user.id).catch(() => null);
+  if (!member) return;
+  const role = guild.roles.cache.find((r) => r.name.toLowerCase() === roleName.toLowerCase());
+  if (role && member.roles.cache.has(role.id)) await member.roles.remove(role).catch(() => {});
 });
 
 // ── Member join → invite tracking + welcome ───────────────────────────────────
@@ -4845,6 +4893,76 @@ client.on("interactionCreate", async (interaction) => {
         .setColor(equipped.length ? 0x57f287 : 0x99aab5)
         .setTimestamp()
     ]});
+  }
+
+  // ── /post-reaction-roles ──────────────────────────────────────────────────────
+  if (commandName === "post-reaction-roles") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    // Find reaction-role channel
+    const rrCh = interaction.guild.channels.cache.find(
+      (c) => c.type === ChannelType.GuildText && c.name.toLowerCase().replace(/[^a-z0-9]/g, "").includes("reactionrole")
+    );
+    if (!rrCh) {
+      return interaction.editReply({ content: "❌ Couldn't find a reaction-role channel in this server. Make sure a channel with \"reaction-role\" in its name exists." });
+    }
+
+    const embedData = {
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🔔 Select Your Notifications")
+          .setDescription(
+            "Click the emojis below to join or leave notification roles for each category.\n\n" +
+            "⚙️ — Dev Blog\n" +
+            "📣 — Announcements\n" +
+            "👀 — Sneak Peek\n" +
+            "🧾 — Changelog\n" +
+            "🎊 — Giveaways\n" +
+            "📅 — Events"
+          )
+          .setColor(0x5865f2)
+          .setFooter({ text: `${interaction.guild.name} • React to toggle a role` })
+          .setTimestamp()
+      ]
+    };
+
+    let panelMsg = null;
+
+    // Try to reuse stored message
+    if (reactionRoleMsgId && reactionRoleChannelId === rrCh.id) {
+      panelMsg = await rrCh.messages.fetch(reactionRoleMsgId).catch(() => null);
+    }
+
+    // If not stored, scan recent messages for an existing bot panel
+    if (!panelMsg) {
+      const recent = await rrCh.messages.fetch({ limit: 20 }).catch(() => null);
+      panelMsg = recent?.find((m) => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0]?.title?.includes("Notification")) ?? null;
+    }
+
+    if (panelMsg) {
+      await panelMsg.edit(embedData);
+    } else {
+      panelMsg = await rrCh.send(embedData);
+    }
+
+    // Ensure all 6 emoji reactions are on the message (add any missing ones in order)
+    for (const emoji of REACTION_ROLE_EMOJIS) {
+      const already = panelMsg.reactions.cache.find((r) => r.emoji.name === emoji);
+      if (!already) await panelMsg.react(emoji).catch(() => {});
+    }
+
+    // Ensure all 6 ping roles exist (create if missing)
+    for (const roleName of Object.values(REACTION_ROLE_MAP)) {
+      await findOrCreateRole(interaction.guild, roleName).catch(() => {});
+    }
+
+    reactionRoleMsgId     = panelMsg.id;
+    reactionRoleChannelId = rrCh.id;
+    saveData();
+
+    return interaction.editReply({
+      content: `✅ Reaction role panel ${panelMsg ? "updated" : "posted"} in ${rrCh}!\n\nAll 6 roles are ready — members can react to get notified.`,
+    });
   }
 
   // ── /setupchannel ─────────────────────────────────────────────────────────────
