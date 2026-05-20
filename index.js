@@ -272,8 +272,8 @@ let   raidLocked      = false;     // true while server is in raid-lockdown
 const setupChannels   = new Set(); // channelIds configured via /setupchannel (persisted)
 
 // ── Reaction Role Panel ────────────────────────────────────────────────────────
-const REACTION_ROLE_MAP    = { "⚙️": "Dev Blog Ping", "📣": "Announcement Ping", "👀": "Sneak Peek Ping", "🧾": "Changelog Ping", "🎊": "Giveaways Ping", "📅": "Events Ping" };
-const REACTION_ROLE_EMOJIS = ["⚙️", "📣", "👀", "🧾", "🎊", "📅"];
+const REACTION_ROLE_MAP    = { "🚧": "Dev Blog Ping", "📣": "Announcement Ping", "👀": "Sneak Peek Ping", "⚙️": "Changelog Ping", "🎊": "Giveaways Ping", "📅": "Events Ping" };
+const REACTION_ROLE_EMOJIS = ["🚧", "📣", "👀", "⚙️", "🎊", "📅"];
 let   reactionRoleMsgId     = null; // persisted panel message ID
 let   reactionRoleChannelId = null; // persisted panel channel ID
 
