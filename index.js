@@ -2375,16 +2375,14 @@ client.on("messageReactionAdd", async (reaction, user) => {
 
   const channelName = reaction.message.channel?.name?.toLowerCase() ?? "";
 
-  // Reaction role panel — only allow emojis the bot itself has reacted with
+  // Reaction role panel — only allow the configured panel emojis
   if (reaction.message.id === reactionRoleMsgId) {
     const norm = (s) => (s ?? "").replace(/\uFE0F/g, "");
     const emojiNorm = norm(reaction.emoji.name);
 
-    // Remove any emoji the bot hasn't put on the panel itself
-    const botHasEmoji = reaction.message.reactions.cache.some(
-      (r) => norm(r.emoji.name) === emojiNorm && r.users.cache.has(client.user.id)
-    );
-    if (!botHasEmoji) {
+    // Remove any emoji that isn't one of the configured panel emojis
+    const isAllowed = REACTION_ROLE_EMOJIS.some((e) => norm(e) === emojiNorm);
+    if (!isAllowed) {
       try { await reaction.users.remove(user.id); } catch { /* ignore */ }
       return;
     }
