@@ -2375,13 +2375,26 @@ client.on("messageReactionAdd", async (reaction, user) => {
 
   const channelName = reaction.message.channel?.name?.toLowerCase() ?? "";
 
-  // Reaction role panel — assign role when emoji added
+  // Reaction role panel — only allow emojis the bot itself has reacted with
   if (reaction.message.id === reactionRoleMsgId) {
-    const roleName = REACTION_ROLE_MAP[reaction.emoji.name];
-    if (!roleName) {
+    const norm = (s) => (s ?? "").replace(/\uFE0F/g, "");
+    const emojiNorm = norm(reaction.emoji.name);
+
+    // Remove any emoji the bot hasn't put on the panel itself
+    const botHasEmoji = reaction.message.reactions.cache.some(
+      (r) => norm(r.emoji.name) === emojiNorm && r.users.cache.has(client.user.id)
+    );
+    if (!botHasEmoji) {
       try { await reaction.users.remove(user.id); } catch { /* ignore */ }
       return;
     }
+
+    // Look up the role using normalized comparison (handles variation selector differences)
+    const roleName = Object.entries(REACTION_ROLE_MAP).find(
+      ([emoji]) => norm(emoji) === emojiNorm
+    )?.[1];
+    if (!roleName) return;
+
     const guild  = reaction.message.guild;
     const member = await guild.members.fetch(user.id).catch(() => null);
     if (!member) return;
@@ -2424,7 +2437,10 @@ client.on("messageReactionRemove", async (reaction, user) => {
   if (reaction.message.partial) { try { await reaction.message.fetch(); } catch { return; } }
   if (reaction.message.id !== reactionRoleMsgId) return;
 
-  const roleName = REACTION_ROLE_MAP[reaction.emoji.name];
+  const norm = (s) => (s ?? "").replace(/\uFE0F/g, "");
+  const roleName = Object.entries(REACTION_ROLE_MAP).find(
+    ([emoji]) => norm(emoji) === norm(reaction.emoji.name)
+  )?.[1];
   if (!roleName) return;
   const guild  = reaction.message.guild;
   const member = await guild.members.fetch(user.id).catch(() => null);
