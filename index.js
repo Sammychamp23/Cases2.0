@@ -227,6 +227,7 @@ const commands = [
     .addUserOption((o) => o.setName("user").setDescription("The member you want to report").setRequired(true))
     .addStringOption((o) => o.setName("reason").setDescription("Why are you reporting this member?").setRequired(true))
     .addStringOption((o) => o.setName("evidence").setDescription("Screenshot URL or extra details (optional)")),
+  new SlashCommandBuilder().setName("claimsurprisecoin").setDescription("💰 Claim coins from an active surprise coin drop — works anywhere in the server!"),
 ].map((cmd) => cmd.toJSON());
 
 // ── Command → required channel ─────────────────────────────────────────────────
@@ -314,6 +315,43 @@ const dailyRotation     = { date: "", items: [] }; // today's featured shop item
 
 // Popular-item tracking: how many times each item has been purchased
 const itemPopularity    = new Map(); // itemId -> purchase count
+
+// ── Rules agreed tracking ──────────────────────────────────────────────────────
+const rulesAgreed = new Set(); // userIds who completed the two-step rules agreement
+
+// ── Surprise coin drop state ───────────────────────────────────────────────────
+let surpriseDrop = {
+  active: false, remaining: 0, totalCoins: 0,
+  claimedBy: new Set(), msgId: null, channelId: null, guildId: null,
+};
+
+const SURPRISE_SCENARIOS = [
+  {
+    title: "💰 VAULT TRUCK CRASH!",
+    description: "A vault truck just SLAMMED into the Cases server and coins are flying EVERYWHERE! 🚚💥\n\nGrab your share before it's all swept up!",
+    color: 0xfee75c, emoji: "💵",
+  },
+  {
+    title: "🖨️ MONEY PRINTER MALFUNCTION!",
+    description: "The Cases 2.0 money printer went haywire and is spitting coins all over the server! Quick, grab some before staff shuts it down! 💸",
+    color: 0x57f287, emoji: "🪙",
+  },
+  {
+    title: "🏦 BANK HEIST SPILLOVER!",
+    description: "Someone tried to rob the Cases bank but dropped the whole bag running away! 💼💰\nCoins scattered everywhere — first come, first served!",
+    color: 0xed4245, emoji: "💳",
+  },
+  {
+    title: "✈️ MYSTERY AIRDROP!",
+    description: "A mystery cargo plane just dropped a crate of coins over the server! 📦\nJump in and claim your cut before it's gone!",
+    color: 0x5865f2, emoji: "📦",
+  },
+  {
+    title: "🎰 JACKPOT OVERFLOW!",
+    description: "The Cases casino jackpot machine overflowed and coins are pouring out everywhere! 🎰💰\nGrab what you can before it's cleaned up!",
+    color: 0xeb459e, emoji: "🎰",
+  },
+];
 
 // ── Fun command stores ─────────────────────────────────────────────────────────
 const funCooldowns      = new Map(); // `${userId}:${cmd}` -> timestamp
@@ -632,18 +670,22 @@ function deserializeMap(obj) {
 function saveData() {
   try {
     const payload = {
-      coins:        serializeMap(coins),
-      xpStore:      serializeMap(xpStore),
-      loginStreak:  serializeMap(loginStreak),
-      lastDaily:    serializeMap(lastDaily),
-      lastWeekly:   serializeMap(lastWeekly),
+      coins:           serializeMap(coins),
+      xpStore:         serializeMap(xpStore),
+      loginStreak:     serializeMap(loginStreak),
+      lastDaily:       serializeMap(lastDaily),
+      lastWeekly:      serializeMap(lastWeekly),
       achievementData: serializeMap(achievementData),
       userInventory:   serializeMap(userInventory),
       userBoosts:      serializeMap(userBoosts),
       msgCount:        serializeMap(msgCount),
       inviteCount:     serializeMap(inviteCount),
+      shopStock:       serializeMap(shopStock),
+      lastPurchase:    serializeMap(lastPurchase),
+      itemPopularity:  serializeMap(itemPopularity),
     };
     payload.setupChannels        = [...setupChannels];
+    payload.rulesAgreed           = [...rulesAgreed];
     payload.reactionRoleMsgId     = reactionRoleMsgId;
     payload.reactionRoleChannelId = reactionRoleChannelId;
     fs.writeFileSync(PERSIST_FILE, JSON.stringify(payload), "utf8");
@@ -666,7 +708,11 @@ function loadData() {
     if (raw.userInventory)   for (const [k,v] of Object.entries(raw.userInventory)) {
       userInventory.set(k, v && v.__map ? new Map(v.entries) : new Map(Object.entries(v ?? {})));
     }
+    if (raw.shopStock)      for (const [k,v] of Object.entries(raw.shopStock))      shopStock.set(k, v);
+    if (raw.lastPurchase)   for (const [k,v] of Object.entries(raw.lastPurchase))   lastPurchase.set(k, v);
+    if (raw.itemPopularity) for (const [k,v] of Object.entries(raw.itemPopularity)) itemPopularity.set(k, v);
     if (raw.setupChannels)        for (const id of raw.setupChannels) setupChannels.add(id);
+    if (raw.rulesAgreed)          for (const id of raw.rulesAgreed)   rulesAgreed.add(id);
     if (raw.reactionRoleMsgId)     reactionRoleMsgId     = raw.reactionRoleMsgId;
     if (raw.reactionRoleChannelId) reactionRoleChannelId = raw.reactionRoleChannelId;
     console.log("[Persist] Data loaded from", PERSIST_FILE);
@@ -788,8 +834,8 @@ async function seedEmptyChannels(guild) {
   }
 }
 
-// Save every 5 minutes + on shutdown
-setInterval(saveData, 5 * 60 * 1000);
+// Save every 60 seconds + on shutdown
+setInterval(saveData, 60 * 1000);
 process.on("SIGTERM", () => { saveData(); process.exit(0); });
 process.on("SIGINT",  () => { saveData(); process.exit(0); });
 
@@ -1702,6 +1748,107 @@ async function sendTicketPanel(channel) {
   await channel.send({ embeds: [built.embed], components: [built.components] }).catch(console.error);
 }
 
+// ── Surprise Coin Drop system ──────────────────────────────────────────────────
+
+async function triggerSurpriseDrop() {
+  const scenario   = SURPRISE_SCENARIOS[Math.floor(Math.random() * SURPRISE_SCENARIOS.length)];
+  const totalCoins = 1000 + Math.floor(Math.random() * 4001); // 1000–5000
+
+  const allGuilds = [...client.guilds.cache.values()];
+  if (allGuilds.length === 0) return;
+  const guild = allGuilds[Math.floor(Math.random() * allGuilds.length)];
+
+  const textChannels = guild.channels.cache.filter(
+    (c) => c.type === ChannelType.GuildText &&
+      c.permissionsFor(guild.members.me)?.has(PermissionFlagsBits.SendMessages) &&
+      !c.name.includes("ticket") && !c.name.includes("staff") &&
+      !c.name.includes("log") && !c.name.includes("admin")
+  );
+  if (textChannels.size === 0) return;
+  const channelArr = [...textChannels.values()];
+  const channel = channelArr[Math.floor(Math.random() * channelArr.length)];
+
+  surpriseDrop.active     = true;
+  surpriseDrop.remaining  = totalCoins;
+  surpriseDrop.totalCoins = totalCoins;
+  surpriseDrop.claimedBy  = new Set();
+  surpriseDrop.guildId    = guild.id;
+  surpriseDrop.channelId  = channel.id;
+
+  const embed = new EmbedBuilder()
+    .setTitle(scenario.title)
+    .setDescription(
+      `${scenario.description}\n\n` +
+      `💰 **${totalCoins.toLocaleString()} coins** up for grabs!\n\n` +
+      `Click below or use \`/claimsurprisecoin\` to grab your share.\n` +
+      `⚠️ Each claim gives a random portion — be quick before it runs out!`
+    )
+    .setColor(scenario.color)
+    .setFooter({ text: `💰 ${totalCoins.toLocaleString()} coins remaining` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("claim_surprise_drop").setLabel(`${scenario.emoji} Claim Coins!`).setStyle(ButtonStyle.Success)
+  );
+
+  try {
+    const msg = await channel.send({ content: "@here 🚨 **SURPRISE DROP!** 🚨", embeds: [embed], components: [row] });
+    surpriseDrop.msgId = msg.id;
+    console.log(`[SurpriseDrop] Triggered in #${channel.name} — ${totalCoins} coins`);
+  } catch (e) {
+    console.error("[SurpriseDrop] Failed to send:", e.message);
+    surpriseDrop.active = false;
+  }
+}
+
+async function claimSurpriseDrop(userId, guild) {
+  if (!surpriseDrop.active || surpriseDrop.remaining <= 0) return { success: false, reason: "none" };
+  if (surpriseDrop.claimedBy.has(userId)) return { success: false, reason: "claimed" };
+
+  const maxClaim = Math.min(surpriseDrop.remaining, 50 + Math.floor(Math.random() * 351)); // 50–400
+  const amount   = maxClaim;
+  surpriseDrop.claimedBy.add(userId);
+  surpriseDrop.remaining -= amount;
+  addCoins(userId, amount, null);
+
+  const isDepleted = surpriseDrop.remaining <= 0;
+
+  // Update or disable the original message
+  try {
+    const ch = guild?.channels.cache.get(surpriseDrop.channelId)
+      ?? client.guilds.cache.get(surpriseDrop.guildId)?.channels.cache.get(surpriseDrop.channelId);
+    if (ch && surpriseDrop.msgId) {
+      const msg = await ch.messages.fetch(surpriseDrop.msgId).catch(() => null);
+      if (msg) {
+        if (isDepleted) {
+          await msg.edit({
+            embeds: [new EmbedBuilder().setTitle("💸 Drop Finished!").setDescription("All coins have been claimed. Stay alert for the next surprise drop!").setColor(0x99aab5).setTimestamp()],
+            components: [],
+          }).catch(() => {});
+        } else {
+          const current = msg.embeds[0];
+          const updatedEmbed = EmbedBuilder.from(current).setFooter({ text: `💰 ${surpriseDrop.remaining.toLocaleString()} coins remaining` });
+          await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
+        }
+      }
+    }
+  } catch { /* ignore edit failure */ }
+
+  if (isDepleted) surpriseDrop.active = false;
+  return { success: true, amount };
+}
+
+function scheduleSurpriseDrop() {
+  const minMs = 2 * 60 * 60 * 1000;
+  const maxMs = 6 * 60 * 60 * 1000;
+  const delay = minMs + Math.floor(Math.random() * (maxMs - minMs));
+  console.log(`[SurpriseDrop] Next drop in ${Math.round(delay / 60000)} min`);
+  setTimeout(async () => {
+    await triggerSurpriseDrop().catch((e) => console.error("[SurpriseDrop]", e.message));
+    scheduleSurpriseDrop();
+  }, delay);
+}
+
 // ── Bot ready ──────────────────────────────────────────────────────────────────
 
 client.once("clientReady", async () => {
@@ -1805,6 +1952,9 @@ client.once("clientReady", async () => {
   // Reward drop zone — every 2 hours activate a random channel
   setInterval(activateRandomDropZone, 2 * 60 * 60 * 1000);
 
+  // Surprise coin drops — randomly every 2–6 hours
+  scheduleSurpriseDrop();
+
   // Auto-create missing required roles in every guild
   for (const guild of client.guilds.cache.values()) {
     for (const roleDef of REQUIRED_ROLES) {
@@ -1841,6 +1991,20 @@ client.once("clientReady", async () => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot || !message.guild) return;
+
+  // ── Ping bypass: delete messages that @mention a user with the No Pings role ─
+  if (message.mentions.members?.size > 0) {
+    const noPingsRoleRef = message.guild.roles.cache.find((r) => r.name.toLowerCase() === PING_BYPASS_ROLE.toLowerCase());
+    if (noPingsRoleRef) {
+      const mentionedProtected = message.mentions.members.some((m) => m.roles.cache.has(noPingsRoleRef.id));
+      if (mentionedProtected) {
+        await message.delete().catch(() => {});
+        const notice = await message.channel.send({ content: `⚠️ ${message.author}, one or more users you mentioned have the **No Pings** role enabled — their mentions were blocked.` }).catch(() => null);
+        if (notice) setTimeout(() => notice.delete().catch(() => {}), 6000);
+        return;
+      }
+    }
+  }
 
   const userId  = message.author.id;
   const now     = Date.now();
@@ -2214,7 +2378,10 @@ client.on("messageReactionAdd", async (reaction, user) => {
   // Reaction role panel — assign role when emoji added
   if (reaction.message.id === reactionRoleMsgId) {
     const roleName = REACTION_ROLE_MAP[reaction.emoji.name];
-    if (!roleName) return;
+    if (!roleName) {
+      try { await reaction.users.remove(user.id); } catch { /* ignore */ }
+      return;
+    }
     const guild  = reaction.message.guild;
     const member = await guild.members.fetch(user.id).catch(() => null);
     if (!member) return;
@@ -2643,34 +2810,70 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-  // ── Button: agree_rules ──────────────────────────────────────────────────────
+  // ── Button: agree_rules (step 1 — show confirm prompt) ───────────────────────
   if (interaction.isButton() && interaction.customId === "agree_rules") {
     const guild  = interaction.guild;
     const member = interaction.member;
+    if (rulesAgreed.has(member.id)) {
+      return interaction.reply({ content: "✅ You already agreed to the rules and have the **Member** role!", flags: MessageFlags.Ephemeral });
+    }
+    const existingMemberRole = guild.roles.cache.find((r) => r.name.toLowerCase() === "member");
+    if (existingMemberRole && member.roles.cache.has(existingMemberRole.id)) {
+      rulesAgreed.add(member.id);
+      saveData();
+      return interaction.reply({ content: "✅ You already have the **Member** role!", flags: MessageFlags.Ephemeral });
+    }
+    const confirmRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("agree_rules_confirm").setLabel("✅ Yes, I agree!").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("agree_rules_cancel").setLabel("❌ Cancel").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("📋 Confirm Rules Agreement")
+          .setDescription("By clicking **Yes, I agree!** you confirm that you have read and will follow the server rules.\n\nThis will grant you the **Member** role and unlock the full server. 🔓")
+          .setColor(0x5865f2),
+      ],
+      components: [confirmRow],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // ── Button: agree_rules_confirm (step 2 — verify the member) ─────────────────
+  if (interaction.isButton() && interaction.customId === "agree_rules_confirm") {
+    const guild  = interaction.guild;
+    const member = interaction.member;
+    if (rulesAgreed.has(member.id)) {
+      return interaction.update({ content: "✅ Already verified!", embeds: [], components: [] });
+    }
     let memberRole = guild.roles.cache.find((r) => r.name.toLowerCase() === "member");
     if (!memberRole) {
-      try {
-        memberRole = await guild.roles.create({ name: "Member", color: 0x5865F2, reason: "Created by rules-agree button" });
-      } catch {
-        return interaction.reply({ content: "❌ Couldn't find or create a **Member** role. Ask an admin to create a role named `Member`.", flags: MessageFlags.Ephemeral });
-      }
-    }
-    if (member.roles.cache.has(memberRole.id)) {
-      return interaction.reply({ content: "✅ You already have the **Member** role!", flags: MessageFlags.Ephemeral });
+      try { memberRole = await guild.roles.create({ name: "Member", color: 0x5865F2, reason: "Created by rules-agree button" }); }
+      catch { return interaction.update({ content: "❌ Couldn't create the Member role. Ask an admin to create a role named `Member`.", embeds: [], components: [] }); }
     }
     try {
       await member.roles.add(memberRole);
-      // Auto-remove Unverified Member role now that they're verified
-      const unverifiedRole = guild.roles.cache.find((r) =>
-        ["unverified member", "unverified"].includes(r.name.toLowerCase())
-      );
-      if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
-        await member.roles.remove(unverifiedRole).catch(() => {});
-      }
-      return interaction.reply({ content: "✅ Welcome! You've been given the **Member** role and now have full access to the server. Enjoy! 🎉", flags: MessageFlags.Ephemeral });
+      const unverifiedRole = guild.roles.cache.find((r) => ["unverified member", "unverified"].includes(r.name.toLowerCase()));
+      if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) await member.roles.remove(unverifiedRole).catch(() => {});
+      rulesAgreed.add(member.id);
+      saveData();
+      return interaction.update({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("✅ Welcome to the server!")
+            .setDescription("You've agreed to the rules and been given the **Member** role. You now have full access — enjoy! 🎉")
+            .setColor(0x57f287),
+        ],
+        components: [],
+      });
     } catch {
-      return interaction.reply({ content: "❌ Failed to assign the **Member** role. Make sure the bot's role is above **Member** in Server Settings → Roles.", flags: MessageFlags.Ephemeral });
+      return interaction.update({ content: "❌ Failed to assign the **Member** role. Make sure the bot's role is above **Member** in Server Settings → Roles.", embeds: [], components: [] });
     }
+  }
+
+  // ── Button: agree_rules_cancel ────────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === "agree_rules_cancel") {
+    return interaction.update({ content: "❌ Cancelled. Click the button again when you're ready.", embeds: [], components: [] });
   }
 
   // ── Button: open_ticket ──────────────────────────────────────────────────────
@@ -4913,10 +5116,10 @@ client.on("interactionCreate", async (interaction) => {
           .setTitle("🔔 Select Your Notifications")
           .setDescription(
             "Click the emojis below to join or leave notification roles for each category.\n\n" +
-            "⚙️ — Dev Blog\n" +
+            "🚧 — Dev Blog\n" +
             "📣 — Announcements\n" +
             "👀 — Sneak Peek\n" +
-            "🧾 — Changelog\n" +
+            "⚙️ — Changelog\n" +
             "🎊 — Giveaways\n" +
             "📅 — Events"
           )
@@ -5137,6 +5340,58 @@ client.on("interactionCreate", async (interaction) => {
         new EmbedBuilder().setTitle("❌ Wrong!").setDescription(`Not quite! Better luck next time. Use \`/trivia\` to try again!`).setColor(0xed4245).setTimestamp()
       ], components: [] });
     }
+  }
+
+  // ── Button: claim_surprise_drop ───────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === "claim_surprise_drop") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const result = await claimSurpriseDrop(interaction.user.id, interaction.guild);
+    if (!result.success && result.reason === "none") {
+      return interaction.editReply({ content: "💨 The drop is already gone! Keep an eye out for the next one." });
+    }
+    if (!result.success && result.reason === "claimed") {
+      return interaction.editReply({ content: "✋ You already claimed your share from this drop! Wait for the next one." });
+    }
+    return interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("💰 Coins Claimed!")
+          .setDescription(`You grabbed **${result.amount.toLocaleString()} coins** from the surprise drop! 🎉\n\n💰 New balance: **${getCoins(interaction.user.id).toLocaleString()} coins**`)
+          .setColor(0x57f287)
+          .setFooter({ text: `${surpriseDrop.remaining > 0 ? `${surpriseDrop.remaining.toLocaleString()} coins still remaining — tell your friends!` : "Drop fully claimed!"}` })
+          .setTimestamp(),
+      ],
+    });
+  }
+
+  // ── /claimsurprisecoin ────────────────────────────────────────────────────────
+  if (commandName === "claimsurprisecoin") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const result = await claimSurpriseDrop(interaction.user.id, interaction.guild);
+    if (!result.success && result.reason === "none") {
+      return interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("💨 No Active Drop")
+            .setDescription("There's no surprise drop happening right now!\n\nDrops happen randomly — stay active and keep an eye on the server. 👀")
+            .setColor(0x99aab5)
+            .setTimestamp(),
+        ],
+      });
+    }
+    if (!result.success && result.reason === "claimed") {
+      return interaction.editReply({ content: "✋ You already claimed your share from the current drop! Wait for the next one." });
+    }
+    return interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("💰 Coins Claimed!")
+          .setDescription(`You grabbed **${result.amount.toLocaleString()} coins** from the surprise drop! 🎉\n\n💰 New balance: **${getCoins(interaction.user.id).toLocaleString()} coins**`)
+          .setColor(0x57f287)
+          .setFooter({ text: `${surpriseDrop.remaining > 0 ? `${surpriseDrop.remaining.toLocaleString()} coins still remaining — tell your friends!` : "Drop fully claimed!"}` })
+          .setTimestamp(),
+      ],
+    });
   }
 
   } catch (err) {
