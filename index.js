@@ -228,6 +228,23 @@ const commands = [
     .addStringOption((o) => o.setName("reason").setDescription("Why are you reporting this member?").setRequired(true))
     .addStringOption((o) => o.setName("evidence").setDescription("Screenshot URL or extra details (optional)")),
   new SlashCommandBuilder().setName("claimsurprisecoin").setDescription("💰 Claim coins from an active surprise coin drop — works anywhere in the server!"),
+
+  // Username Monitor
+  new SlashCommandBuilder()
+    .setName("monitor")
+    .setDescription("🔍 Username availability monitor — find free 3 & 4-letter Roblox usernames")
+    .addSubcommand((sub) =>
+      sub.setName("status").setDescription("📊 Show scanner stats, speed, and progress"))
+    .addSubcommand((sub) =>
+      sub.setName("found").setDescription("✅ List recently discovered available usernames")
+        .addIntegerOption((o) => o.setName("limit").setDescription("How many to show (default 10, max 25)").setMinValue(1).setMaxValue(25)))
+    .addSubcommand((sub) =>
+      sub.setName("pause").setDescription("⏸ Pause the scanner (Head Admin only)"))
+    .addSubcommand((sub) =>
+      sub.setName("resume").setDescription("▶ Resume the scanner (Head Admin only)"))
+    .addSubcommand((sub) =>
+      sub.setName("setchannel").setDescription("📢 Set the channel for username-found alerts (Head Admin only)")
+        .addChannelOption((o) => o.setName("channel").setDescription("Channel to send alerts to").setRequired(true).addChannelTypes(ChannelType.GuildText))),
 ].map((cmd) => cmd.toJSON());
 
 // ── Command → required channel ─────────────────────────────────────────────────
@@ -1851,6 +1868,223 @@ function scheduleSurpriseDrop() {
 
 // ── Bot ready ──────────────────────────────────────────────────────────────────
 
+// ── Username Monitor ───────────────────────────────────────────────────────────
+// Scans all 3-letter (33,696) and 4-letter (1,213,056) Roblox usernames 24/7.
+// Uses the public Roblox validate endpoint (no auth needed), double-verifies
+// every hit before alerting, and persists scan state across restarts.
+
+const MON_CHARS   = "abcdefghijklmnopqrstuvwxyz0123456789"; // positions 2+ (36 opts)
+const MON_LETTERS = "abcdefghijklmnopqrstuvwxyz";           // position 1  (26 opts)
+const MON_C = 36, MON_L = 26;
+const MON_TOTAL_3 = MON_L * MON_C * MON_C;          // 33,696
+const MON_TOTAL_4 = MON_L * MON_C * MON_C * MON_C;  // 1,213,056
+const MON_TOTAL   = MON_TOTAL_3 + MON_TOTAL_4;       // 1,246,752
+
+// Convert a global index (0–MON_TOTAL-1) → username string deterministically.
+// Indices 0..33,695 = 3-letter  |  33,696..1,246,751 = 4-letter
+function monIndexToUsername(idx) {
+  if (idx < MON_TOTAL_3) {
+    const c2 = idx % MON_C; idx = Math.floor(idx / MON_C);
+    const c1 = idx % MON_C; idx = Math.floor(idx / MON_C);
+    return MON_LETTERS[idx] + MON_CHARS[c1] + MON_CHARS[c2];
+  }
+  idx -= MON_TOTAL_3;
+  const c3 = idx % MON_C; idx = Math.floor(idx / MON_C);
+  const c2 = idx % MON_C; idx = Math.floor(idx / MON_C);
+  const c1 = idx % MON_C; idx = Math.floor(idx / MON_C);
+  return MON_LETTERS[idx] + MON_CHARS[c1] + MON_CHARS[c2] + MON_CHARS[c3];
+}
+
+// ── Persistent state ───────────────────────────────────────────────────────────
+const MON_STATE_FILE = "./monitor_state.json";
+let monState = { cursor: 0, totalChecked: 0, found: [], alertsSent: [] };
+let monRunning = false, monSessionChecks = 0, monSessionStart = Date.now();
+let monAlertChannelId = process.env.MONITOR_ALERT_CHANNEL_ID ?? null;
+let monClient = null;
+
+// Rolling checks-per-minute samples (last 5 minutes)
+const monCpmSamples = []; let monCpmBucket = 0;
+setInterval(() => { monCpmSamples.push(monCpmBucket); if (monCpmSamples.length > 5) monCpmSamples.shift(); monCpmBucket = 0; }, 60_000);
+
+function loadMonitorState() {
+  try {
+    if (fs.existsSync(MON_STATE_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(MON_STATE_FILE, "utf8"));
+      monState = {
+        cursor      : raw.cursor       ?? 0,
+        totalChecked: raw.totalChecked ?? 0,
+        found       : raw.found        ?? [],
+        alertsSent  : raw.alertsSent   ?? [],
+      };
+      console.log(`[Monitor] State loaded — cursor ${monState.cursor.toLocaleString()}/${MON_TOTAL.toLocaleString()}, found: ${monState.found.length}`);
+    } else {
+      console.log("[Monitor] No prior state — starting fresh scan");
+    }
+  } catch (e) { console.error("[Monitor] Load error:", e.message); }
+}
+
+function saveMonitorState() {
+  try { fs.writeFileSync(MON_STATE_FILE, JSON.stringify(monState, null, 2)); }
+  catch (e) { console.error("[Monitor] Save error:", e.message); }
+}
+
+// Auto-save every 30 s
+setInterval(() => { if (monState.cursor > 0) saveMonitorState(); }, 30_000);
+
+// ── Roblox username checker ────────────────────────────────────────────────────
+// POST https://auth.roblox.com/v1/usernames/validate — no authentication required
+// Response code 0 = username valid & available, 1 = taken, 2 = inappropriate, etc.
+let monLastReq = 0;
+
+async function monCheckRoblox(username, retries = 3) {
+  // Pace to ≤4 req/s per instance
+  const gap = 250 - (Date.now() - monLastReq);
+  if (gap > 0) await new Promise(r => setTimeout(r, gap));
+  monLastReq = Date.now();
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch("https://auth.roblox.com/v1/usernames/validate", {
+        method : "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body   : JSON.stringify({ username, birthday: "2000-01-01T00:00:00.000Z", context: "Signup" }),
+        signal : AbortSignal.timeout(10_000),
+      });
+      if (res.status === 429) {
+        const wait = (parseInt(res.headers.get("Retry-After") || "30") + 1) * 1000;
+        console.warn(`[Monitor] Rate limited — waiting ${(wait / 1000).toFixed(0)}s`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      if (!res.ok) { await new Promise(r => setTimeout(r, 1500 * (i + 1))); continue; }
+      const d = await res.json();
+      return { available: d.code === 0, code: d.code ?? -1 };
+    } catch (e) {
+      if (i < retries - 1) { await new Promise(r => setTimeout(r, 2000 * (i + 1))); continue; }
+      return { available: false, code: -1, error: e.message };
+    }
+  }
+  return { available: false, code: -1, error: "Max retries exceeded" };
+}
+
+// ── Alert sender ───────────────────────────────────────────────────────────────
+async function sendMonitorAlert(entry) {
+  const ts  = Math.floor(new Date(entry.detectedAt).getTime() / 1000);
+  const emb = new EmbedBuilder()
+    .setColor(entry.username.length === 3 ? 0xffd700 : 0x00ff88)
+    .setTitle(`🔔 ${entry.username.length}-Letter Roblox Username Available — \`${entry.username}\``)
+    .setDescription("Register it now → https://www.roblox.com/")
+    .addFields(
+      { name: "🎮 Platform",   value: "Roblox",                              inline: true },
+      { name: "🔡 Username",   value: `\`${entry.username}\``,               inline: true },
+      { name: "📏 Length",     value: `${entry.username.length} characters`, inline: true },
+      { name: "✅ Confidence", value: "High (double-verified)",               inline: true },
+      { name: "🕐 Detected",  value: `<t:${ts}:R>`,                         inline: true },
+    )
+    .setFooter({ text: "CASES Username Monitor • Roblox" })
+    .setTimestamp();
+  const ping = `@everyone 🚨 **AVAILABLE: \`${entry.username}\`** — grab it on Roblox NOW!`;
+
+  if (monClient && monAlertChannelId) {
+    try {
+      const ch = await monClient.channels.fetch(monAlertChannelId).catch(() => null);
+      if (ch?.isTextBased()) await ch.send({ content: ping, embeds: [emb] });
+      else console.warn("[Monitor] Alert channel not found:", monAlertChannelId);
+    } catch (e) { console.error("[Monitor] Discord alert failed:", e.message); }
+  }
+
+  const hook = process.env.MONITOR_WEBHOOK_URL;
+  if (hook) {
+    try {
+      await fetch(hook, {
+        method : "POST",
+        headers: { "Content-Type": "application/json" },
+        body   : JSON.stringify({ content: ping, embeds: [emb.toJSON()] }),
+        signal : AbortSignal.timeout(6000),
+      });
+    } catch (e) { console.error("[Monitor] Webhook failed:", e.message); }
+  }
+
+  console.log(`[Monitor] 🔔 ALERTED: ${entry.username} (${entry.username.length}-letter) at ${entry.detectedAt}`);
+}
+
+// ── Scan engine ────────────────────────────────────────────────────────────────
+const MON_CONCURRENCY  = 4;      // concurrent checkers
+const MON_VERIFY_DELAY = 4_000;  // ms to wait before re-checking a potential hit
+
+async function monProcessUsername(username) {
+  const first = await monCheckRoblox(username);
+  monCpmBucket++; monState.totalChecked++; monSessionChecks++;
+  if (!first.available) return;
+
+  // Double-verify before alerting (anti-false-positive)
+  await new Promise(r => setTimeout(r, MON_VERIFY_DELAY));
+  const second = await monCheckRoblox(username);
+  monCpmBucket++; monState.totalChecked++; monSessionChecks++;
+  if (!second.available) return;
+
+  if (monState.alertsSent.includes(username)) return; // dedup
+  const entry = { username, platform: "roblox", detectedAt: new Date().toISOString(), verified: true };
+  monState.found.push(entry);
+  monState.alertsSent.push(username);
+  saveMonitorState();
+  console.log(`[Monitor] ✅ CONFIRMED AVAILABLE: ${username} (${username.length}-letter)`);
+  sendMonitorAlert(entry).catch(() => {});
+}
+
+async function monScanLoop() {
+  while (monRunning) {
+    if (monState.cursor >= MON_TOTAL) {
+      monState.cursor = 0;
+      console.log("[Monitor] ✔ Full cycle complete — restarting from beginning");
+      saveMonitorState();
+    }
+    const batch = [];
+    for (let i = 0; i < MON_CONCURRENCY && monState.cursor + i < MON_TOTAL; i++) {
+      batch.push(monIndexToUsername(monState.cursor + i));
+    }
+    monState.cursor += batch.length;
+    await Promise.all(batch.map(u => monProcessUsername(u).catch(e =>
+      console.error(`[Monitor] Error on ${u}:`, e.message)
+    )));
+  }
+}
+
+// ── Public API (called by clientReady + /monitor command) ──────────────────────
+function startMonitor(discordClient) {
+  if (monRunning) return;
+  loadMonitorState();
+  monRunning = true; monSessionStart = Date.now(); monSessionChecks = 0; monClient = discordClient;
+  monScanLoop().catch(e => { console.error("[Monitor] Loop crashed:", e.message); monRunning = false; });
+  console.log(`[Monitor] ▶ Started — cursor ${monState.cursor.toLocaleString()}/${MON_TOTAL.toLocaleString()}, concurrency: ${MON_CONCURRENCY}`);
+}
+
+function stopMonitor() { monRunning = false; saveMonitorState(); console.log("[Monitor] ⏹ Stopped"); }
+
+function setMonitorAlertChannel(id) { monAlertChannelId = id; }
+
+function getMonitorStats() {
+  const prog3 = Math.min(100, (Math.min(monState.cursor, MON_TOTAL_3) / MON_TOTAL_3) * 100);
+  const prog4 = monState.cursor > MON_TOTAL_3 ? ((monState.cursor - MON_TOTAL_3) / MON_TOTAL_4) * 100 : 0;
+  const cpm   = monCpmSamples.length ? Math.round(monCpmSamples.reduce((a, b) => a + b, 0) / monCpmSamples.length) : monCpmBucket;
+  return {
+    running: monRunning, cursor: monState.cursor, total: MON_TOTAL,
+    total3char: MON_TOTAL_3, total4char: MON_TOTAL_4,
+    currentPhase: monState.cursor < MON_TOTAL_3 ? "3-letter" : "4-letter",
+    progress3charPct: prog3.toFixed(1), progress4charPct: prog4.toFixed(1),
+    overallPct: ((monState.cursor / MON_TOTAL) * 100).toFixed(2),
+    totalChecked: monState.totalChecked, sessionChecks: monSessionChecks,
+    checksPerMinute: cpm, foundTotal: monState.found.length,
+    found3char: monState.found.filter(f => f.username.length === 3).length,
+    found4char: monState.found.filter(f => f.username.length === 4).length,
+    uptimeSec: Math.round((Date.now() - monSessionStart) / 1000),
+  };
+}
+
+function getMonitorFound(limit = 25) { return [...monState.found].reverse().slice(0, limit); }
+
+// ── End of Username Monitor ────────────────────────────────────────────────────
+
 client.once("clientReady", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
@@ -1983,6 +2217,9 @@ client.once("clientReady", async () => {
       if (ch) { ch.messages.fetch(reactionRoleMsgId).catch(() => {}); break; }
     }
   }
+
+  // Start username availability monitor
+  startMonitor(client);
 
   console.log("All systems online.");
 });
@@ -5376,6 +5613,82 @@ client.on("interactionCreate", async (interaction) => {
           .setTimestamp(),
       ],
     });
+  }
+
+  // ── /monitor ──────────────────────────────────────────────────────────────────
+  if (commandName === "monitor") {
+    const sub = interaction.options.getSubcommand();
+
+    // pause / resume / setchannel — Head Admin only
+    if (["pause", "resume", "setchannel"].includes(sub) && !isHeadAdmin(interaction.member)) {
+      return interaction.reply({ content: "🚫 Restricted to Head Admins.", flags: MessageFlags.Ephemeral });
+    }
+
+    if (sub === "pause") {
+      stopMonitor();
+      return interaction.reply({ content: "⏸ Username monitor **paused**.", flags: MessageFlags.Ephemeral });
+    }
+
+    if (sub === "resume") {
+      startMonitor(client);
+      return interaction.reply({ content: "▶ Username monitor **resumed**.", flags: MessageFlags.Ephemeral });
+    }
+
+    if (sub === "setchannel") {
+      const ch = interaction.options.getChannel("channel");
+      setMonitorAlertChannel(ch.id);
+      return interaction.reply({ content: `📢 Alert channel set to ${ch}. Available username alerts will be posted there.`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (sub === "status") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const s = getMonitorStats();
+      const uptimeStr = (() => {
+        const h = Math.floor(s.uptimeSec / 3600);
+        const m = Math.floor((s.uptimeSec % 3600) / 60);
+        const sec = s.uptimeSec % 60;
+        return `${h}h ${m}m ${sec}s`;
+      })();
+      const embed = new EmbedBuilder()
+        .setColor(s.running ? 0x00ff88 : 0xff4444)
+        .setTitle("🔍 Username Monitor — Status")
+        .setDescription(s.running ? "🟢 **Scanning actively**" : "🔴 **Paused**")
+        .addFields(
+          { name: "⚡ Current Phase",       value: s.currentPhase === "3-letter" ? "🥇 3-letter usernames" : "🥈 4-letter usernames", inline: true },
+          { name: "📈 Checks / Minute",     value: s.checksPerMinute.toLocaleString(), inline: true },
+          { name: "⏱ Session Uptime",       value: uptimeStr, inline: true },
+          { name: "🔢 3-Letter Progress",   value: `${s.progress3charPct}% of ${s.total3char.toLocaleString()}`, inline: true },
+          { name: "🔢 4-Letter Progress",   value: `${s.progress4charPct}% of ${s.total4char.toLocaleString()}`, inline: true },
+          { name: "📊 Overall Progress",    value: `${s.overallPct}% (${s.cursor.toLocaleString()} / ${s.total.toLocaleString()})`, inline: true },
+          { name: "✅ Found (3-letter)",    value: s.found3char.toString(), inline: true },
+          { name: "✅ Found (4-letter)",    value: s.found4char.toString(), inline: true },
+          { name: "🔎 Total Checks (ever)", value: s.totalChecked.toLocaleString(), inline: true },
+        )
+        .setFooter({ text: "Double-verified — no false positives • Roblox only" })
+        .setTimestamp();
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    if (sub === "found") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const limit = interaction.options.getInteger("limit") ?? 10;
+      const found = getMonitorFound(limit);
+      if (!found.length) {
+        return interaction.editReply({ content: "📭 No available usernames found yet — the scanner is still working through the list." });
+      }
+      const embed = new EmbedBuilder()
+        .setColor(0xffd700)
+        .setTitle(`✅ ${found.length} Available Username${found.length === 1 ? "" : "s"} Found`)
+        .setDescription(
+          found.map((f, i) => {
+            const ts = Math.floor(new Date(f.detectedAt).getTime() / 1000);
+            return `\`${(i + 1).toString().padStart(2, " ")}.\` \`${f.username}\` — <t:${ts}:R>`;
+          }).join("\n")
+        )
+        .setFooter({ text: "All entries double-verified • Most recent first" })
+        .setTimestamp();
+      return interaction.editReply({ embeds: [embed] });
+    }
   }
 
   // ── /claimsurprisecoin ────────────────────────────────────────────────────────

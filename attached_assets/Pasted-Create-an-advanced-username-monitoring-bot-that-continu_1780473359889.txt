@@ -1,0 +1,117 @@
+Create an advanced username monitoring bot that continuously monitors both Discord usernames and Roblox usernames (NOT display names) and instantly alerts when an untaken 3-letter or 4-letter username becomes available.
+
+Requirements:
+
+1. Username Detection
+
+* Monitor only 3-character and 4-character usernames.
+* Check only actual account usernames.
+* Ignore display names, nicknames, profile names, and aliases.
+* Support letters (A-Z), numbers (0-9), and any other valid username characters allowed by the platform.
+* Detect usernames that become available due to account deletion, renaming, bans, or release.
+
+2. Roblox Support
+
+* Check Roblox username availability.
+* Confirm availability using Roblox username APIs or other reliable methods.
+* Avoid false positives.
+* Respect Roblox rate limits.
+* Automatically re-check any potentially available usernames before sending alerts.
+
+3. Discord Support
+
+* Check Discord global usernames only.
+* Do not check server nicknames or display names.
+* Verify username availability before reporting.
+* Support Discord’s current username system where possible.
+
+4. Scanning System
+
+* Run scans 24/7.
+* Use asynchronous processing and concurrency for maximum speed.
+* Implement intelligent rate-limit handling.
+* Automatically recover from temporary API failures.
+* Log all scan activity.
+
+5. Alerts
+
+* Send instant notifications when a username becomes available.
+* Include:
+    * Username
+    * Platform (Roblox or Discord)
+    * Detection timestamp
+    * Confidence status
+    * Availability verification result
+* Support:
+    * Discord webhook alerts
+    * Discord bot messages
+    * Console logging
+
+6. Anti-False-Positive System
+
+* Re-check every detected username multiple times.
+* Confirm availability through at least two verification attempts.
+* Prevent duplicate notifications.
+* Track previously reported usernames.
+
+7. Username Focus
+
+* The bot must focus ONLY on 3-letter and 4-letter usernames.
+* Do not scan usernames longer than 4 characters.
+* Do not scan usernames shorter than 3 characters.
+* Every system, queue, cache, database entry, and availability check must be optimized specifically for 3-character and 4-character usernames.
+* Prioritize all 3-letter usernames first, then all 4-letter usernames.
+* Ignore dictionary words, common phrases, and longer usernames entirely.
+* The bot’s resources should be dedicated exclusively to finding available 3-letter and 4-letter usernames as quickly as possible.
+* Maintain a complete database of every possible 3-letter and 4-letter username that matches the platform’s allowed username rules.
+* Continuously monitor these usernames and instantly report any that become available.
+* Use aggressive optimization techniques to maximize scan speed while remaining within platform rate limits.
+* Provide statistics showing:
+    * Total 3-letter usernames monitored
+    * Total 4-letter usernames monitored
+    * 3-letter usernames checked per minute
+    * 4-letter usernames checked per minute
+    * Newly available 3-letter usernames found
+    * Newly available 4-letter usernames found
+
+8. Database
+
+* Store:
+    * Previously checked usernames
+    * Availability history
+    * Alert history
+    * Scan statistics
+* Use SQLite or PostgreSQL.
+
+9. Dashboard
+
+* Show:
+    * Total usernames checked
+    * Scan speed
+    * Available usernames found
+    * Last scan time
+    * Platform statistics
+* Optional web dashboard.
+
+10. Reliability
+
+* Automatic restart after crashes.
+* Error logging.
+* Health monitoring.
+* Status command showing:
+    * Uptime
+    * Checks per minute
+    * Current queue size
+    * API status
+
+11. Code Requirements
+
+* Use Node.js.
+* Organize code into modules.
+* Use environment variables for tokens and webhooks.
+* Include detailed comments.
+* Include setup instructions.
+* Optimize for long-term 24/7 operation.
+
+Goal:
+Create the fastest possible username monitoring system dedicated exclusively to finding available 3-letter and 4-letter usernames on Roblox and Discord, minimizing false positives and delivering instant alerts whenever a username becomes available.
